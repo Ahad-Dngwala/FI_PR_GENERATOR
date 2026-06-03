@@ -899,7 +899,7 @@ FI-PR-GENERATOR is a human-supervised multi-agent open-source contribution intel
 
 <div align="center">
 
-**MIT License** · Built for GSSoC contributors · Human-in-the-loop by design
+**MIT License** · Built for open-source contributors · Human-in-the-loop by design
 
 *Start small. Prove one PR. Then scale.*
 
