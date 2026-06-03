@@ -344,6 +344,52 @@ def list_states(status: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# test-notification
+# ---------------------------------------------------------------------------
+
+
+@cli.command("test-notification")
+def test_notification() -> None:
+    """
+    Send a test notification to your phone and start the local server.
+    Use this to verify that the mobile approval/rejection button tap
+    successfully routes back to your PC via ngrok/tunnels.
+    """
+    from integrations.ntfy_notifier import ApprovalRequest, send_and_wait
+    import uuid
+
+    run_id = f"test-{uuid.uuid4().hex[:8]}"
+    req = ApprovalRequest(
+        run_id=run_id,
+        org="test-org",
+        repo="test-repo",
+        issue_number=999,
+        issue_title="Verify Mobile Approval Flow",
+        branch="fix/test-mobile-approval",
+        files_changed=["src/test_file.py"],
+        diff_summary="  src/test_file.py (+10/-2)",
+        test_result="PASS",
+        risk_level="low",
+        risk_score=15.0,
+        reviewer_notes=["Tap Approve or Reject on your phone. If ngrok is configured correctly, this CLI will receive it!"],
+        model_used="gemini/gemini-2.5-pro",
+    )
+
+    click.echo("📱 Sending test notification to phone...")
+    click.echo(f"   Topic: {os.environ.get('NTFY_TOPIC')}")
+    click.echo(f"   Approval Server URL: {os.environ.get('APPROVAL_SERVER_URL')}")
+    click.echo("   Starting local Flask server on port 8080 and waiting for your response on phone...")
+    
+    result = send_and_wait(req)
+    if result is True:
+        click.echo("\n✅ Received APPROVAL from your phone!")
+    elif result is False:
+        click.echo("\n❌ Received REJECTION from your phone!")
+    else:
+        click.echo("\n⏳ Timed out waiting for response.")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

@@ -100,26 +100,40 @@ def send_approval_request(
 
     title = f"FI-PR: #{req.issue_number} — {req.issue_title[:50]}"
     body = _build_body(req)
-    priority = "high" if req.risk_level == "high" else "default"
-    tags = f"robot,{_RISK_EMOJI.get(req.risk_level, 'white_circle').replace('🟢', 'green_circle').replace('🟡', 'yellow_circle').replace('🔴', 'red_circle')}"
+    priority = 4 if req.risk_level == "high" else 3
+    risk_tag = _RISK_EMOJI.get(req.risk_level, 'white_circle').replace('🟢', 'green_circle').replace('🟡', 'yellow_circle').replace('🔴', 'red_circle')
 
-    actions = (
-        f"http, ✅ Approve, {server_url}/approve/{req.run_id}, method=POST, clear=true; "
-        f"http, ❌ Reject,  {server_url}/reject/{req.run_id},  method=POST, clear=true"
-    )
-
-    headers: dict[str, str] = {
-        "Title": title,
-        "Priority": priority,
-        "Tags": "robot",
-        "Actions": actions,
+    payload = {
+        "topic": topic,
+        "message": body,
+        "title": title,
+        "priority": priority,
+        "tags": ["robot", risk_tag],
+        "actions": [
+            {
+                "action": "http",
+                "label": "✅ Approve",
+                "url": f"{server_url.rstrip('/')}/approve/{req.run_id}",
+                "method": "POST",
+                "clear": True
+            },
+            {
+                "action": "http",
+                "label": "❌ Reject",
+                "url": f"{server_url.rstrip('/')}/reject/{req.run_id}",
+                "method": "POST",
+                "clear": True
+            }
+        ]
     }
+
+    headers: dict[str, str] = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    url = f"{ntfy_url.rstrip('/')}/{topic}"
+    url = ntfy_url.rstrip('/')
     try:
-        resp = requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=15)
+        resp = requests.post(url, json=payload, headers=headers, timeout=15)
         resp.raise_for_status()
         log.info(
             "ntfy.notification_sent",
