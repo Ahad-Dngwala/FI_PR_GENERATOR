@@ -1,7 +1,6 @@
 <div align="center">
 
 # FI-PR-GENERATOR
-# FI-PR-GENERATOR
 
 ### Autonomous Human-in-the-Loop Open Source Contribution Intelligence Platform
 
@@ -22,7 +21,7 @@
 
 ---
 
-## Table of Contents
+## 📋 Table of Contents
 
 1. [What Is This?](#what-is-this)
 2. [Architecture](#architecture)
@@ -75,12 +74,10 @@ The system **cannot** push a branch, open a PR, or comment on an issue without y
 ┌─────────────────────────────────────────────────────────────────────┐
 │                   ACTIVITY + MEMORY GATE                 [TEAL]     │
 │   Last commit < 7d?  •  Last merge < 14d?  •  Memory loaded?        │
-│   Last commit < 7d?  •  Last merge < 14d?  •  Memory loaded?        │
 └──────────┬──────────────────────────────────────┬───────────────────┘
            │ ACTIVE                               │ DEAD
            ▼                                      ▼
 ┌─────────────────────────┐             ┌─────────────────────┐
-│  MULTI-SIGNAL ISSUE     │             │  SKIP ORG TODAY     │
 │  MULTI-SIGNAL ISSUE     │             │  SKIP ORG TODAY     │
 │  SCORER  (Llama/Groq)   │             │  log reason         │
 │  Score: 0 – 100         │             └─────────────────────┘
@@ -107,7 +104,6 @@ The system **cannot** push a branch, open a PR, or comment on an issue without y
 │           CLAUDE CODER  +  SCOPE GUARD               [AMBER]        │
 │   • Aider applies edits (search/replace, no corrupt files)          │
 │   • Auto-commit with natural commit messages                        │
-│   • Diff > 200 lines?  →  reject + re-plan                          │
 │   • Diff > 200 lines?  →  reject + re-plan                          │
 └──────────┬──────────────────────────────────────┬───────────────────┘
            │                                      │ SCOPE EXCEEDED
@@ -145,13 +141,11 @@ The system **cannot** push a branch, open a PR, or comment on an issue without y
 │   git fetch origin  •  git rebase main  •  re-run tests             │
 │   verify issue still assigned to you                                │
 │   conflict too large? ──► abort + notify human                      │
-│   conflict too large? ──► abort + notify human                      │
 └──────────┬──────────────────────────────────────────────────────────┘
            │
            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                  DRAFT PR via gh CLI                  [GREEN]       │
-│   gh pr create --draft --title "..." --body "Closes #N"             │
 │   gh pr create --draft --title "..." --body "Closes #N"             │
 │   PR body: change summary + test evidence + limitations             │
 └─────────────────────────────────────────────────────────────────────┘
@@ -654,6 +648,114 @@ fi-pr-generator/
 
 ---
 
+## Complete Technical Stack
+
+### Language & Runtime
+| Component | Library / Tool | Version | Purpose |
+|---|---|---|---|
+| Language | Python | 3.11+ | Core runtime |
+| CLI | Click | 8.x | `main.py` entry point |
+| Data validation | Pydantic v2 | 2.x | All data models + schemas |
+| Env management | python-dotenv | latest | `.env` loading |
+| Logging | structlog | latest | Structured JSON logs, strips secrets |
+| Scheduling | APScheduler | 3.x | Nightly memory refresh cron |
+
+### AI / LLM
+| Library | Purpose |
+|---|---|
+| `anthropic` | Claude Sonnet API calls |
+| `openai` | OpenRouter (Qwen, DeepSeek) via OpenAI-compatible API |
+| `google-generativeai` | Gemini Flash for org memory |
+| `groq` | Llama 3.1 for scoring, planning, classification |
+
+### Code Editing & Git
+| Tool | Install | Purpose |
+|---|---|---|
+| **aider-chat** | `pip install aider-chat` | Repo-map, search/replace edits, auto-commit |
+| **GitPython** | `pip install gitpython` | Clone, branch, fetch, rebase, push in Python |
+| **gh CLI** | `apt install gh` | `gh pr create --draft` |
+| **ripgrep** | `apt install ripgrep` | Fast symbol/keyword search across repo |
+
+### GitHub Integration
+| Library | Purpose |
+|---|---|
+| `PyGithub` | Issues, PRs, comments, assignment check |
+| `requests` | Raw GitHub REST API calls with caching |
+
+### Notification (ntfy)
+| Component | Details |
+|---|---|
+| **ntfy.sh** | Free push notifications — no app account needed |
+| Install | Download ntfy app on Android/iOS, subscribe to your topic |
+| Integration | Plain `requests.post()` — no SDK needed |
+| Action buttons | Via `Actions:` HTTP header |
+
+```python
+# ntfy approval notification — 4 lines of code
+import requests
+requests.post(f"{NTFY_URL}/{NTFY_TOPIC}",
+    data=f"PR ready: {issue_title}\nRisk: {risk_score}/100\nFiles: {files}",
+    headers={"Actions": f"approve, ✅ Approve, {server}/approve/{run_id}; "
+                        f"reject,  ❌ Reject,  {server}/reject/{run_id}"})
+```
+
+### Storage
+| Component | Library | Purpose |
+|---|---|---|
+| Org memory | Plain JSON files | Per-org/repo knowledge base |
+| State persistence | Plain JSON | Run state, survives restarts |
+| Embeddings (optional, Phase 3) | `chromadb` | Local vector store, no cloud |
+| Caching | `requests-cache` | GitHub API response caching |
+
+### Testing & Isolation
+| Tool | Purpose |
+|---|---|
+| `subprocess` | Run `npm test`, `pytest`, lint in child process |
+| `pyenv` (called via subprocess) | Repo-specific Python version |
+| `nvm` (called via subprocess) | Repo-specific Node version |
+| `virtualenv` | Per-repo Python env isolation |
+
+### Full `requirements.txt`
+```
+# LLM
+anthropic>=0.30
+openai>=1.30          # OpenRouter compatible
+google-generativeai>=0.7
+groq>=0.9
+
+# GitHub + Git
+PyGithub>=2.3
+gitpython>=3.1
+requests>=2.32
+requests-cache>=1.2
+
+# Code editing
+aider-chat>=0.50
+
+# Data + config
+pydantic>=2.7
+python-dotenv>=1.0
+click>=8.1
+structlog>=24.0
+apscheduler>=3.10
+
+# Optional (Phase 3)
+chromadb>=0.5
+```
+
+### External CLI Tools
+```bash
+# Install all at once (Ubuntu/Debian)
+sudo apt install gh ripgrep
+
+# Verify
+gh --version
+rg --version
+aider --version
+```
+
+---
+
 ## Quick Start
 
 ### 1. Clone and Install
@@ -781,25 +883,34 @@ python main.py run --org GSSoC-ExtD --repo my-repo --issue 42
 }
 ```
 
-### Telegram Approval Message Format
+### ntfy Notification Format
 
 ```
- FI-PR-GENERATOR — Approval Required
+Title:   🤖 FI-PR-GENERATOR — Approval Required
+Body:
+  Issue:   #42 — Fix navbar overlap on mobile
+  Branch:  fix/navbar-mobile-42
+  Repo:    GSSoC-ExtD/my-repo
+  Files:   src/components/Navbar.tsx (+12/-3)
+           src/__tests__/Navbar.test.ts (+8/-0)
+  Tests:   ✅ PASSED (47 tests, 0 failures)
+  Risk:    🟢 LOW (score: 18/100)
+  Model:   claude-sonnet-4-20250514
 
- Issue:   #42 — Fix navbar overlap on mobile
- Branch:  fix/navbar-mobile-42
- Repo:    GSSoC-ExtD/my-repo
+Actions:  [✅ Approve & Push]   [❌ Reject]
+```
 
- Changed files:
- Changed files:
-  • src/components/Navbar.tsx  (+12 / -3)
-  • src/__tests__/Navbar.test.ts  (+8 / -0)
-
- Tests:  ✅ PASSED  (npm test — 47 tests, 0 failures)
- Risk:   🟢 LOW  (score: 18/100)
- Model:  Claude Sonnet 4.5
-
-[✅ Approve & Push]   [❌ Reject]
+ntfy HTTP headers used:
+```python
+headers = {
+    "Title": "FI-PR — Approval needed: fix navbar #42",
+    "Priority": "high",
+    "Tags": "robot,white_check_mark",
+    "Actions": (
+        f"http, ✅ Approve, {SERVER_URL}/approve/{run_id}, method=POST; "
+        f"http, ❌ Reject,  {SERVER_URL}/reject/{run_id},  method=POST"
+    )
+}
 ```
 
 ---
@@ -851,16 +962,13 @@ If above 40%: system is working — scale up carefully
 
 ```
 [] Week 1:  github_client.py + scorer.py
-[] Week 1:  github_client.py + scorer.py
          → Can list and score issues. No coding yet.
          → Validate: are scored issues actually good ones?
 
 [] Week 2:  coder.py + aider_runner.py + telegram_bot.py
-[] Week 2:  coder.py + aider_runner.py + telegram_bot.py
          → Generates patches and sends to Telegram
          → No PR creation yet
 
-[] Week 3:  test_runner.py + orchestrator.py
 [] Week 3:  test_runner.py + orchestrator.py
          → Full pipeline end-to-end
          → Prove ONE accepted PR
@@ -872,18 +980,11 @@ If above 40%: system is working — scale up carefully
 [] Week 4:  org_memory.py + memory_builder.py
 [] Week 5:  fallback chain + budget monitoring
 [] Week 6:  nightly scheduler + state persistence
-[] Week 4:  org_memory.py + memory_builder.py
-[] Week 5:  fallback chain + budget monitoring
-[] Week 6:  nightly scheduler + state persistence
 ```
 
 ### Phase 3 — Production (Weeks 7–10)
 
 ```
-[] Week 7:  ripgrep + tree-sitter context layer
-[] Week 8:  environment detector (pre-test env check)
-[] Week 9:  multi-user support (per-user GitHub tokens)
-[] Week 10: dashboard + metrics collection
 [] Week 7:  ripgrep + tree-sitter context layer
 [] Week 8:  environment detector (pre-test env check)
 [] Week 9:  multi-user support (per-user GitHub tokens)
@@ -899,19 +1000,9 @@ If above 40%: system is working — scale up carefully
 -  Not a guarantee — maintainers make final acceptance decisions
 -  Not suitable for architecture changes — scope guard prevents this
 -  Not stealth — PR body includes AI assistance disclosure
--  Not a fully autonomous bot — human approval required for **every** push
--  Not a spam tool — stops on assignment, respects all repo rules
--  Not a guarantee — maintainers make final acceptance decisions
--  Not suitable for architecture changes — scope guard prevents this
--  Not stealth — PR body includes AI assistance disclosure
 
 ## What This IS
 
--  A **personal productivity amplifier** for open-source contributors
--  A **learning system** — org memory improves with every run
--  A **safe, auditable** contribution pipeline with full audit trail
--  An **honest tool** — transparent about AI involvement
--  A **resume-grade project** demonstrating multi-agent orchestration
 -  A **personal productivity amplifier** for open-source contributors
 -  A **learning system** — org memory improves with every run
 -  A **safe, auditable** contribution pipeline with full audit trail
@@ -928,7 +1019,7 @@ FI-PR-GENERATOR is a human-supervised multi-agent open-source contribution intel
 
 <div align="center">
 
-**MIT License** · Built for Open-source contributors · Human-in-the-loop by design
+**MIT License** · Built for Open-Source contributors · Human-in-the-loop by design
 
 *Start small. Prove one PR. Then scale.*
 
