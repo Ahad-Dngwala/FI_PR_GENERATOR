@@ -1,0 +1,36 @@
+# Sensitive runtime data — never commit these
+memory_store/
+state/
+diffs/
+logs/
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Aider working files
+.aider*
+.aider.chat.history.md
+.aider.tags.cache.v3/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# GitHub cache DB (requests-cache)
+github_cache.sqlite
+
+# OS
+.DS_Store
+Thumbs.db

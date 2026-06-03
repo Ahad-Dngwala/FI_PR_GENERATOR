@@ -59,7 +59,7 @@ Judgment of a human.
 Transparency of an audit log.
 ```
 
-The system **cannot** push a branch, open a PR, or comment on an issue without your explicit Telegram approval. Every action is logged. Every decision is explainable.
+The system **cannot** push a branch, open a PR, or comment on an issue without your explicit **ntfy.sh** mobile approval. Every action is logged. Every decision is explainable.
 
 ---
 
@@ -394,10 +394,12 @@ Cost per PR:      ₹2,200 ÷ 18 ≈ ₹122 per accepted PR
 | Org memory build | Gemini 2.0 Flash | Google AI Studio | 1M token context — fits 50 PRs of history in one call |
 | Issue scoring + filter | Llama 3.1 8B | Groq | Fastest free option, binary classification only |
 | Planning | Llama 3.1 70B | Groq | Reasoning quality needed, still free |
-| **Code generation** | **Claude Sonnet 4.5** | **Anthropic** | **Best-in-class code quality. Only paid component.** |
-| Fallback coding | Qwen 2.5 Coder 72B | OpenRouter | 75-80% Claude quality, available free |
-| Second fallback | DeepSeek Coder v2 | OpenRouter | Last resort — good enough for simple fixes |
-| Independent review | Qwen QwQ 32B | Groq | Different model = independent perspective |
+| Workflow detection | Llama 3.1 70B | Groq | Open-ended pattern discovery from CONTRIBUTING.md + bot comments |
+| **Code generation** | **Gemini 2.5 Pro** | **Google AI Studio** | **Best free code quality. Primary model.** |
+| Fallback coding 1 | Qwen 2.5 Coder 72B | OpenRouter | Strong free coding model |
+| Fallback coding 2 | DeepSeek Coder v2 | OpenRouter | Reliable free fallback |
+| Fallback coding 3 | Claude Sonnet | Anthropic | Last resort (paid) — only if all free models fail |
+| Independent review | Qwen 2.5 Coder 32B | Groq | Different model = independent perspective |
 | Test failure classify | Llama 3.1 8B | Groq | Fast rule-based → LLM fallback |
 | Notifications | **ntfy.sh** | ntfy.sh (self-host or cloud) | No bot setup, HTTP push, mobile action buttons, open-source |
 
@@ -405,9 +407,10 @@ Cost per PR:      ₹2,200 ÷ 18 ≈ ₹122 per accepted PR
 
 ```python
 CODING_FALLBACK_CHAIN = [
-    "claude-sonnet-4-20250514",     # primary
-    "qwen/qwen-2.5-coder-72b-instruct",  # fallback 1
-    "deepseek/deepseek-coder-v2",   # fallback 2
+    "gemini/gemini-2.5-pro",             # primary (FREE)
+    "qwen/qwen-2.5-coder-72b-instruct",  # fallback 1 (FREE via OpenRouter)
+    "deepseek/deepseek-coder-v2",        # fallback 2 (FREE via OpenRouter)
+    "claude-sonnet-4-20250514",          # fallback 3 (paid — last resort)
 ]
 
 def call_with_fallback(prompt: str) -> str:
@@ -942,7 +945,7 @@ headers = {
 |---|---|---|
 | Accepted PR rate | ≥ 25% of submitted | < 10% after 20+ submissions |
 | PRs submitted (30 days) | ≥ 5 | 0 accepted after 20+ attempts |
-| Human approval gate | 100% of pushes gated | Any push without Telegram approval |
+| Human approval gate | 100% of pushes gated | Any push without ntfy.sh approval |
 | Monthly cost | < ₹3,000 | > ₹6,000 |
 | System uptime | Restartable after crash | Unrecoverable state loss |
 
@@ -967,8 +970,8 @@ If above 40%: system is working — scale up carefully
          → Can list and score issues. No coding yet.
          → Validate: are scored issues actually good ones?
 
-[] Week 2:  coder.py + aider_runner.py + telegram_bot.py
-         → Generates patches and sends to Telegram
+[] Week 2:  coder.py + aider_runner.py + ntfy_notifier.py
+         → Generates patches and sends approval request to ntfy.sh
          → No PR creation yet
 
 [] Week 3:  test_runner.py + orchestrator.py

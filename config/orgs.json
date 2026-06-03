@@ -1,0 +1,6 @@
+{
+  "orgs": [],
+  "issue_score_threshold": 60,
+  "max_diff_lines": 200,
+  "max_retries": 2
+}

@@ -1,0 +1,32 @@
+# LLM clients
+anthropic>=0.30
+openai>=1.30          # OpenRouter uses OpenAI-compatible API
+google-generativeai>=0.7
+groq>=0.9
+
+# GitHub + Git
+PyGithub>=2.3
+gitpython>=3.1
+requests>=2.32
+requests-cache>=1.2
+
+# Code editing — install separately (Windows support exists but may need PATH setup)
+# pip install aider-chat
+# aider-chat>=0.50
+
+# Data + config
+pydantic>=2.7
+python-dotenv>=1.0
+click>=8.1
+structlog>=24.0
+apscheduler>=3.10,<4.0
+
+# Notification approval server
+flask>=3.0
+
+# Retry logic for all external API calls
+tenacity>=8.3
+
+# Optional Phase 3 — local vector embeddings
+# chromadb>=0.5
+# sentence-transformers>=3.0
