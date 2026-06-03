@@ -1,5 +1,7 @@
 # FI-PR-GENERATOR
 
+<img width="2125" height="2750" alt="FI-PR-GENERATOR" src="https://github.com/user-attachments/assets/d42e5a43-d393-4bb8-b6ef-cde514514738" />
+
 > **Autonomous Human-in-the-Loop Open Source Contribution Intelligence Platform**
 
 A multi-agent AI system that finds eligible GitHub issues, understands repositories deeply, generates minimal safe patches, validates them locally, and creates draft pull requests — only after your explicit approval via Telegram.
@@ -71,9 +73,9 @@ IssueScore = 0.25 × Clarity
 
 | Range | Decision |
 |---|---|
-| 75–100 | ✅ Proceed immediately |
-| 60–74 | ⚠️ Manual review advised |
-| < 60 | ❌ Reject |
+| 75–100 | Proceed immediately |
+| 60–74 | Manual review advised |
+| < 60 | Reject |
 
 ### Risk Score (sent in Telegram)
 
@@ -311,17 +313,17 @@ All states are serializable. Pipeline survives restarts.
 
 ## What This Is NOT
 
-- ❌ Not fully autonomous (human approval required for every push)
-- ❌ Not a spam bot (stops on assignment, respects repo rules)
-- ❌ Not guaranteed to get PRs merged (maintainers decide)
-- ❌ Not suitable for complex architecture changes (scope guard prevents this)
+- Not fully autonomous (human approval required for every push)
+- Not a spam bot (stops on assignment, respects repo rules)
+- Not guaranteed to get PRs merged (maintainers decide)
+- Not suitable for complex architecture changes (scope guard prevents this)
 
 ## What This IS
 
-- ✅ A personal productivity amplifier for open-source contributors
-- ✅ A learning system (org memory improves with every run)
-- ✅ A safe, auditable, human-supervised contribution pipeline
-- ✅ An honest system (PR body discloses AI assistance)
+- A personal productivity amplifier for open-source contributors
+- A learning system (org memory improves with every run)
+- A safe, auditable, human-supervised contribution pipeline
+- An honest system (PR body discloses AI assistance)
 
 ---
 
