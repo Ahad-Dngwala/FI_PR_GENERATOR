@@ -34,13 +34,14 @@
 9. [Org Memory Schema](#org-memory-schema)
 10. [Safety Model](#safety-model)
 11. [Folder Structure](#folder-structure)
-12. [Quick Start](#quick-start)
-13. [Configuration Reference](#configuration-reference)
-14. [Prompt Architecture](#prompt-architecture)
-15. [Known Limitations & Mitigations](#known-limitations--mitigations)
-16. [Success Criteria](#success-criteria)
-17. [Roadmap](#roadmap)
-18. [What This Is NOT](#what-this-is-not)
+12. [Complete Technical Stack](#complete-technical-stack)
+13. [Quick Start](#quick-start)
+14. [Configuration Reference](#configuration-reference)
+15. [Prompt Architecture](#prompt-architecture)
+16. [Known Limitations & Mitigations](#known-limitations--mitigations)
+17. [Success Criteria](#success-criteria)
+18. [Roadmap](#roadmap)
+19. [What This Is NOT](#what-this-is-not)
 
 ---
 
