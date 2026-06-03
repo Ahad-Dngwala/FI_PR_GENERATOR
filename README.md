@@ -807,6 +807,7 @@ GEMINI_API_KEY=AIza...            # Org memory builds (FREE)
 
 # ── OPTIONAL FALLBACKS ──────────────────────────────────
 OPENROUTER_API_KEY=sk-or-...      # Qwen / DeepSeek fallback
+NTFY_REPLY_TOPIC=fi-..-reply       # defaults to {NTFY_TOPIC}-reply
 ```
 
 ### 4. Configure Target Orgs
