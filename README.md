@@ -1,6 +1,7 @@
 <div align="center">
 
 # FI-PR-GENERATOR
+# FI-PR-GENERATOR
 
 ### Autonomous Human-in-the-Loop Open Source Contribution Intelligence Platform
 
@@ -21,7 +22,7 @@
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 1. [What Is This?](#what-is-this)
 2. [Architecture](#architecture)
@@ -74,10 +75,12 @@ The system **cannot** push a branch, open a PR, or comment on an issue without y
 ┌─────────────────────────────────────────────────────────────────────┐
 │                   ACTIVITY + MEMORY GATE                 [TEAL]     │
 │   Last commit < 7d?  •  Last merge < 14d?  •  Memory loaded?        │
+│   Last commit < 7d?  •  Last merge < 14d?  •  Memory loaded?        │
 └──────────┬──────────────────────────────────────┬───────────────────┘
            │ ACTIVE                               │ DEAD
            ▼                                      ▼
 ┌─────────────────────────┐             ┌─────────────────────┐
+│  MULTI-SIGNAL ISSUE     │             │  SKIP ORG TODAY     │
 │  MULTI-SIGNAL ISSUE     │             │  SKIP ORG TODAY     │
 │  SCORER  (Llama/Groq)   │             │  log reason         │
 │  Score: 0 – 100         │             └─────────────────────┘
@@ -104,6 +107,7 @@ The system **cannot** push a branch, open a PR, or comment on an issue without y
 │           CLAUDE CODER  +  SCOPE GUARD               [AMBER]        │
 │   • Aider applies edits (search/replace, no corrupt files)          │
 │   • Auto-commit with natural commit messages                        │
+│   • Diff > 200 lines?  →  reject + re-plan                          │
 │   • Diff > 200 lines?  →  reject + re-plan                          │
 └──────────┬──────────────────────────────────────┬───────────────────┘
            │                                      │ SCOPE EXCEEDED
@@ -141,11 +145,13 @@ The system **cannot** push a branch, open a PR, or comment on an issue without y
 │   git fetch origin  •  git rebase main  •  re-run tests             │
 │   verify issue still assigned to you                                │
 │   conflict too large? ──► abort + notify human                      │
+│   conflict too large? ──► abort + notify human                      │
 └──────────┬──────────────────────────────────────────────────────────┘
            │
            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                  DRAFT PR via gh CLI                  [GREEN]       │
+│   gh pr create --draft --title "..." --body "Closes #N"             │
 │   gh pr create --draft --title "..." --body "Closes #N"             │
 │   PR body: change summary + test evidence + limitations             │
 └─────────────────────────────────────────────────────────────────────┘
@@ -785,6 +791,7 @@ python main.py run --org GSSoC-ExtD --repo my-repo --issue 42
  Repo:    GSSoC-ExtD/my-repo
 
  Changed files:
+ Changed files:
   • src/components/Navbar.tsx  (+12 / -3)
   • src/__tests__/Navbar.test.ts  (+8 / -0)
 
@@ -844,13 +851,16 @@ If above 40%: system is working — scale up carefully
 
 ```
 [] Week 1:  github_client.py + scorer.py
+[] Week 1:  github_client.py + scorer.py
          → Can list and score issues. No coding yet.
          → Validate: are scored issues actually good ones?
 
 [] Week 2:  coder.py + aider_runner.py + telegram_bot.py
+[] Week 2:  coder.py + aider_runner.py + telegram_bot.py
          → Generates patches and sends to Telegram
          → No PR creation yet
 
+[] Week 3:  test_runner.py + orchestrator.py
 [] Week 3:  test_runner.py + orchestrator.py
          → Full pipeline end-to-end
          → Prove ONE accepted PR
@@ -862,11 +872,18 @@ If above 40%: system is working — scale up carefully
 [] Week 4:  org_memory.py + memory_builder.py
 [] Week 5:  fallback chain + budget monitoring
 [] Week 6:  nightly scheduler + state persistence
+[] Week 4:  org_memory.py + memory_builder.py
+[] Week 5:  fallback chain + budget monitoring
+[] Week 6:  nightly scheduler + state persistence
 ```
 
 ### Phase 3 — Production (Weeks 7–10)
 
 ```
+[] Week 7:  ripgrep + tree-sitter context layer
+[] Week 8:  environment detector (pre-test env check)
+[] Week 9:  multi-user support (per-user GitHub tokens)
+[] Week 10: dashboard + metrics collection
 [] Week 7:  ripgrep + tree-sitter context layer
 [] Week 8:  environment detector (pre-test env check)
 [] Week 9:  multi-user support (per-user GitHub tokens)
@@ -882,9 +899,19 @@ If above 40%: system is working — scale up carefully
 -  Not a guarantee — maintainers make final acceptance decisions
 -  Not suitable for architecture changes — scope guard prevents this
 -  Not stealth — PR body includes AI assistance disclosure
+-  Not a fully autonomous bot — human approval required for **every** push
+-  Not a spam tool — stops on assignment, respects all repo rules
+-  Not a guarantee — maintainers make final acceptance decisions
+-  Not suitable for architecture changes — scope guard prevents this
+-  Not stealth — PR body includes AI assistance disclosure
 
 ## What This IS
 
+-  A **personal productivity amplifier** for open-source contributors
+-  A **learning system** — org memory improves with every run
+-  A **safe, auditable** contribution pipeline with full audit trail
+-  An **honest tool** — transparent about AI involvement
+-  A **resume-grade project** demonstrating multi-agent orchestration
 -  A **personal productivity amplifier** for open-source contributors
 -  A **learning system** — org memory improves with every run
 -  A **safe, auditable** contribution pipeline with full audit trail
