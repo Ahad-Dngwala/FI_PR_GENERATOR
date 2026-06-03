@@ -1,0 +1,41 @@
+# FI-PR-GENERATOR — Requirements
+# Multi-Agent Autonomous Open Source Contribution Platform
+
+# Core AI / LLM
+aider-chat>=0.50.0          # Claude/Qwen/DeepSeek file editing engine
+anthropic>=0.28.0           # Claude Sonnet API
+groq>=0.9.0                 # Llama 3.1 via Groq (issue scoring, classifier)
+google-generativeai>=0.7.0  # Gemini Flash (org memory builder)
+openai>=1.30.0              # OpenRouter API (Qwen reviewer via OpenAI-compat)
+
+# GitHub Integration
+PyGithub>=2.3.0             # GitHub REST API
+gitpython>=3.1.43           # Local git operations
+
+# Telegram Approval Bot
+python-telegram-bot>=21.3   # Approval transport with inline buttons
+
+# Orchestration & Scheduling
+APScheduler>=3.10.4         # Nightly memory refresh scheduler
+
+# Data Validation & Models
+pydantic>=2.7.0             # Schema validation for all data models
+
+# Config & Environment
+python-dotenv>=1.0.1        # .env file loading
+PyYAML>=6.0.1               # YAML config parsing
+
+# Structured Logging
+structlog>=24.2.0            # JSON structured logs
+
+# HTTP & Resilience
+requests>=2.32.0            # HTTP utilities
+tenacity>=8.3.0             # Retry with backoff
+
+# CLI & Display
+rich>=13.7.1                # Beautiful terminal output
+colorama>=0.4.6             # Cross-platform terminal colors
+
+# Dev / Testing
+pytest>=8.2.0
+pytest-asyncio>=0.23.7
