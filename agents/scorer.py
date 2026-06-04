@@ -13,6 +13,7 @@ from typing import Optional
 
 import structlog
 
+from memory.config_loader import get_model_name
 from memory.schemas import ActivityScore, IssueScore, OrgMemory, RiskScore
 
 log = structlog.get_logger(__name__)
@@ -192,37 +193,54 @@ def _score_clarity(text: str, issue_number: int = 0) -> float:
     Prompt: does the issue have clear steps, expected behavior,
     and defined acceptance criteria?
 
-    Falls back to heuristic scoring if Groq is unavailable.
+    Fallback chain: Groq → Gemini Flash → heuristic scoring.
     """
+    prompt = (
+        "Score the clarity of this GitHub issue from 0 to 100.\n"
+        "High score means: has clear reproduction steps, describes expected vs actual behavior,\n"
+        "has defined acceptance criteria, is not vague or ambiguous.\n"
+        "Low score means: one-liner, no context, vague request.\n\n"
+        f"Issue text:\n{text[:1500]}\n\n"
+        "Respond with only a number between 0 and 100."
+    )
+
+    # Try Groq first
     api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        log.warning("scorer.no_groq_key", fallback="heuristic_clarity")
-        return _heuristic_clarity(text)
+    if api_key:
+        try:
+            from groq import Groq
 
-    try:
-        from groq import Groq
+            client = Groq(api_key=api_key)
+            model = get_model_name("scoring_model", "llama-3.1-8b-instant")
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5,
+                temperature=0.0,
+            )
+            raw = response.choices[0].message.content.strip()
+            score = float("".join(c for c in raw if c.isdigit() or c == "."))
+            return min(100.0, max(0.0, score))
+        except Exception as exc:
+            log.warning("scorer.clarity_groq_failed", error=str(exc)[:100], fallback="gemini")
 
-        client = Groq(api_key=api_key)
-        prompt = (
-            "Score the clarity of this GitHub issue from 0 to 100.\n"
-            "High score means: has clear reproduction steps, describes expected vs actual behavior,\n"
-            "has defined acceptance criteria, is not vague or ambiguous.\n"
-            "Low score means: one-liner, no context, vague request.\n\n"
-            f"Issue text:\n{text[:1500]}\n\n"
-            "Respond with only a number between 0 and 100."
-        )
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=5,
-            temperature=0.0,
-        )
-        raw = response.choices[0].message.content.strip()
-        score = float("".join(c for c in raw if c.isdigit() or c == "."))
-        return min(100.0, max(0.0, score))
-    except Exception as exc:
-        log.warning("scorer.clarity_llm_failed", error=str(exc), fallback="heuristic")
-        return _heuristic_clarity(text)
+    # Fallback: try Gemini Flash
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_key)
+            gmodel = genai.GenerativeModel("gemini-2.5-flash")
+            response = gmodel.generate_content(prompt)
+            raw = response.text.strip()
+            score = float("".join(c for c in raw if c.isdigit() or c == "."))
+            return min(100.0, max(0.0, score))
+        except Exception as exc:
+            log.warning("scorer.clarity_gemini_failed", error=str(exc)[:100], fallback="heuristic")
+
+    # Final fallback: heuristic
+    log.warning("scorer.clarity_llm_failed", fallback="heuristic")
+    return _heuristic_clarity(text)
 
 
 def _heuristic_clarity(text: str) -> float:

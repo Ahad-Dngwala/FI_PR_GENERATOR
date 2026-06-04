@@ -53,6 +53,9 @@ def clone_repo(repo_url: str, local_path: str) -> Optional[Repo]:
         if (path / ".git").exists():
             log.info("git.pulling_existing", path=str(path))
             repo = Repo(str(path))
+            # Switch to default branch first so origin.pull() doesn't fail on a custom local branch
+            default = get_default_branch(repo)
+            repo.git.checkout(default)
             origin = repo.remotes.origin
             origin.pull()
             log.info("git.pull_done", path=str(path))

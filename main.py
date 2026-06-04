@@ -390,6 +390,47 @@ def test_notification() -> None:
 
 
 # ---------------------------------------------------------------------------
+# listen (command bot)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("listen")
+@click.option(
+    "--live", is_flag=True, default=False,
+    help="Allow --live suffix in commands to trigger non-dry-run pipeline runs",
+)
+def listen(live: bool) -> None:
+    """
+    Start the ntfy command bot — listen for pipeline commands from your phone.
+
+    Subscribes to NTFY_COMMAND_TOPIC and waits for messages in the format:
+      "org/repo"          → runs dry-run pipeline
+      "org/repo --live"   → runs live pipeline (only if --live flag is set)
+
+    Rate limited to 3 runs/hour with 20-minute cooldown between runs.
+    Only orgs in config/orgs.json whitelist are accepted.
+
+    Requires NTFY_COMMAND_TOPIC to be set in .env.
+    """
+    from integrations.command_listener import listen_for_commands
+
+    mode = "LIVE + DRY-RUN" if live else "DRY-RUN ONLY"
+    click.echo(f"📱 Starting command listener [{mode}]")
+    click.echo(f"   Command topic: {os.environ.get('NTFY_COMMAND_TOPIC', '(not set)')}")
+    click.echo(f"   Approval topic: {os.environ.get('NTFY_TOPIC', '(not set)')}")
+    click.echo("   Send 'org/repo' from ntfy app to trigger a pipeline run.")
+    click.echo("   Press Ctrl+C to stop.\n")
+
+    try:
+        listen_for_commands(allow_live=live)
+    except EnvironmentError as exc:
+        click.echo(f"\n❌ {exc}", err=True)
+        raise SystemExit(1)
+    except KeyboardInterrupt:
+        click.echo("\n⏹️  Command listener stopped.")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

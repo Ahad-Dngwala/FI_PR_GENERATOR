@@ -12,6 +12,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Optional
+from memory.config_loader import get_model_name
 
 import structlog
 
@@ -218,8 +219,9 @@ def _classify_with_llm(output: str) -> str:
 
         client = Groq(api_key=api_key)
         truncated = output[-1500:]  # last 1500 chars
+        model = get_model_name("classifier_model", "llama-3.1-8b-instant")
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model=model,
             messages=[
                 {
                     "role": "user",

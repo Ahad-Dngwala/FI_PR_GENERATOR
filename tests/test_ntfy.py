@@ -40,6 +40,10 @@ from pathlib import Path
 
 import pytest
 import requests
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # State dir used by the approval server
 STATE_DIR = Path("state")

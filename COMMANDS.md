@@ -98,7 +98,7 @@ python main.py run --org GSSoC-ExtD --repo my-repo --issue 42 --dry-run
 4. Clones repo and creates branch
 5. Runs tests before coding (records preexisting failures)
 6. Generates patch (Gemini 2.5 Pro → fallbacks)
-7. Runs reviewer (Qwen 32B)
+7. Runs reviewer (Llama 3.3 70B)
 8. Computes risk score
 9. **Sends ntfy notification to your phone — WAITS for you to tap Approve/Reject**
 10. Rebases, runs tests again, pushes branch, creates draft PR

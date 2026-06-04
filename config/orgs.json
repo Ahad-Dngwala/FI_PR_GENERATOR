@@ -1,6 +1,14 @@
 {
-  "orgs": [],
+  "orgs": [
+    {
+      "name": "viru0909-dev",
+      "repos": [
+        {"name": "nyay-setu-working", "enabled": true}
+      ]
+    }
+  ],
   "issue_score_threshold": 60,
   "max_diff_lines": 200,
-  "max_retries": 2
+  "max_retries": 2,
+  "max_runs_per_hour": 3
 }

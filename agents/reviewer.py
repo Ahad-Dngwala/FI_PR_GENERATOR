@@ -12,12 +12,10 @@ import os
 
 import structlog
 
+from memory.config_loader import get_model_name
 from memory.schemas import OrgMemory
 
 log = structlog.get_logger(__name__)
-
-REVIEWER_MODEL = "qwen-2.5-coder-32b-preview"
-REVIEWER_PROVIDER = "groq"
 
 
 def review_patch(
@@ -92,8 +90,9 @@ approved = true even if there are minor issues (human will see them)."""
         from groq import Groq
 
         client = Groq(api_key=api_key)
+        model = get_model_name("review_model", "llama-3.3-70b-versatile")
         response = client.chat.completions.create(
-            model=REVIEWER_MODEL,
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000,
             temperature=0.1,
@@ -120,7 +119,7 @@ approved = true even if there are minor issues (human will see them)."""
             approved=approved,
             critical=len(critical_issues),
             minor=len(minor_issues),
-            model=REVIEWER_MODEL,
+            model=model,
         )
         return approved, all_notes
 

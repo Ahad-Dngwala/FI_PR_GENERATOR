@@ -19,6 +19,37 @@ log = structlog.get_logger(__name__)
 # Maximum files to return from context retrieval
 MAX_RELEVANT_FILES = 5
 
+# ---------------------------------------------------------------------------
+# Context retrieval filters — prevent ripgrep from matching data/docs/seed
+# ---------------------------------------------------------------------------
+
+EXCLUDED_DIRS = [
+    "data/", "seed/", "docs/", "doc/", "node_modules/", "__pycache__/",
+    ".git/", "vendor/", "assets/images/", "public/images/", "migrations/",
+    "fixtures/", ".aider", "coverage/", "dist/", "build/", ".next/",
+    "static/fonts/", "static/images/", ".vscode/", ".idea/",
+]
+
+CODE_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".sass", ".less",
+    ".html", ".vue", ".svelte", ".java", ".kt", ".go", ".rs", ".rb",
+    ".php", ".c", ".cpp", ".h", ".hpp", ".cs", ".swift", ".dart",
+    ".yaml", ".yml", ".toml", ".xml", ".sql", ".sh", ".bat",
+    ".dockerfile", ".tf", ".hcl", ".prisma", ".graphql", ".proto",
+}
+
+# Glob patterns passed to ripgrep --glob to pre-filter at search time
+_RG_GLOB_EXCLUDES = [
+    "!data/", "!seed/", "!docs/", "!doc/", "!node_modules/",
+    "!.git/", "!vendor/", "!dist/", "!build/", "!coverage/",
+    "!.next/", "!.aider*", "!fixtures/", "!migrations/",
+    "!*.txt", "!*.md", "!*.pdf", "!*.csv", "!*.log",
+    "!*.png", "!*.jpg", "!*.jpeg", "!*.gif", "!*.svg",
+    "!*.ico", "!*.woff", "!*.woff2", "!*.ttf", "!*.eot",
+    "!*.min.js", "!*.min.css", "!*.map",
+    "!package-lock.json", "!yarn.lock", "!poetry.lock", "!Pipfile.lock",
+]
+
 
 def _run_subprocess(
     args: list[str],
@@ -32,6 +63,10 @@ def _run_subprocess(
     Uses shell=False on all platforms for security. On Windows, aider
     must be on PATH (installed via pip install aider-chat).
     """
+    import os
+    env_copy = (env if env is not None else os.environ).copy()
+    env_copy["PYTHONIOENCODING"] = "utf-8"
+
     try:
         result = subprocess.run(
             args,
@@ -39,7 +74,7 @@ def _run_subprocess(
             text=True,
             cwd=str(cwd),
             timeout=timeout,
-            env=env,
+            env=env_copy,
         )
         return result.returncode, result.stdout, result.stderr
     except FileNotFoundError as exc:
@@ -55,8 +90,20 @@ def get_repo_map(repo_path: str) -> str:
     Runs: aider --map-tokens 2048 --show-repo-map
     Returns the repo-map string, or empty string if aider is not available.
     """
+    from memory.config_loader import get_coding_chain
+    chain = get_coding_chain()
+    model = chain[0][0] if chain else "gemini/gemini-2.5-flash"
+
     code, stdout, stderr = _run_subprocess(
-        args=["aider", "--map-tokens", "2048", "--show-repo-map", "--no-auto-commit"],
+        args=[
+            "aider",
+            "--model", model,
+            "--map-tokens", "2048",
+            "--show-repo-map",
+            "--no-auto-commit",
+            "--yes-always",
+            "--no-gitignore",
+        ],
         cwd=repo_path,
         timeout=120,
     )
@@ -81,13 +128,13 @@ def find_relevant_files(
     repo_path: str, issue_text: str, repo_map: str
 ) -> list[str]:
     """
-    Use ripgrep to find files related to the issue, cross-referenced with repo-map.
+    Use ripgrep to find *source code* files related to the issue.
 
     Strategy:
     1. Extract meaningful keywords from issue text (skip stop words)
-    2. Run rg -l "{keyword}" for each keyword
+    2. Run rg -l with --glob exclusions to skip data/docs/media files
     3. Deduplicate and rank by hit count
-    4. Cross-reference with repo_map to verify files exist
+    4. Filter through _is_source_file() to reject non-code matches
     5. Return top MAX_RELEVANT_FILES paths
 
     Falls back to a simple repo_map filename scan if rg is not available.
@@ -112,8 +159,14 @@ def find_relevant_files(
     file_hits: dict[str, int] = {}
 
     for keyword in keywords:
+        # Build ripgrep command with glob exclusions to pre-filter
+        rg_args = ["rg", "-l", "--max-filesize", "500K"]
+        for glob in _RG_GLOB_EXCLUDES:
+            rg_args.extend(["--glob", glob])
+        rg_args.extend([keyword, "."])
+
         code, stdout, _ = _run_subprocess(
-            args=["rg", "-l", "--max-filesize", "500K", keyword, "."],
+            args=rg_args,
             cwd=repo_path,
             timeout=30,
         )
@@ -131,17 +184,27 @@ def find_relevant_files(
         # Fallback: extract file paths mentioned in repo_map
         return _extract_files_from_repo_map(repo_map, repo_path)
 
-    # Rank by hit count, filter to files that actually exist
+    # Rank by hit count, filter to files that actually exist AND are source code
     ranked = sorted(file_hits.items(), key=lambda x: x[1], reverse=True)
     result: list[str] = []
-    for rel_path, _ in ranked:
+    skipped: list[str] = []
+    for rel_path, hits in ranked:
         abs_path = repo / rel_path
         if abs_path.exists() and abs_path.is_file():
-            # Prefer source files over generated/lock files
             if _is_source_file(rel_path):
                 result.append(str(abs_path.as_posix()))
+            else:
+                skipped.append(rel_path)
         if len(result) >= MAX_RELEVANT_FILES:
             break
+
+    if skipped:
+        log.info(
+            "aider.files_filtered_out",
+            count=len(skipped),
+            examples=skipped[:5],
+            reason="non-source files excluded (data/docs/media/lock)",
+        )
 
     log.info(
         "aider.relevant_files_found",
@@ -186,6 +249,8 @@ def apply_patch(
                 "--model", model,
                 "--apply", tmp_path,
                 "--yes",
+                "--yes-always",
+                "--no-gitignore",
                 "--no-auto-commit",
             ],
             cwd=repo_path,
@@ -261,10 +326,31 @@ def _extract_files_from_repo_map(repo_map: str, repo_path: str) -> list[str]:
 
 
 def _is_source_file(path: str) -> bool:
-    """Return True if the path looks like a source file (not generated/lock)."""
+    """
+    Return True if the path is a source/config file worth sending to the LLM.
+
+    Rejects:
+    - Files in excluded directories (data/, seed/, docs/, node_modules/, etc.)
+    - Lock files and generated artifacts
+    - Non-code file extensions (.txt, .pdf, .csv, .md, images, fonts, etc.)
+    """
+    path_lower = path.lower().replace("\\", "/")
+
+    # Exclude directories containing data, docs, generated content
+    if any(d in path_lower for d in EXCLUDED_DIRS):
+        return False
+
+    # Exclude lock/generated files by name pattern
     skip_patterns = [
         "node_modules", ".min.", "package-lock.json", "yarn.lock",
         "poetry.lock", "Pipfile.lock", ".pyc", "__pycache__",
-        "dist/", "build/", ".git/",
     ]
-    return not any(p in path for p in skip_patterns)
+    if any(p in path_lower for p in skip_patterns):
+        return False
+
+    # Must have a recognized code extension
+    ext = Path(path).suffix.lower()
+    if ext not in CODE_EXTENSIONS:
+        return False
+
+    return True

@@ -857,19 +857,44 @@ To test the system safely without making unexpected commits or PRs:
 ```json
 {
   "coding_chain": [
-    "claude-sonnet-4-20250514",
-    "qwen/qwen-2.5-coder-72b-instruct",
-    "deepseek/deepseek-coder-v2"
+    {
+      "model": "gemini/gemini-2.5-flash",
+      "provider": "google"
+    },
+    {
+      "model": "gemini/gemini-2.5-pro",
+      "provider": "google"
+    },
+    {
+      "model": "qwen/qwen2.5-coder-32b-instruct:free",
+      "provider": "openrouter"
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash:free",
+      "provider": "openrouter"
+    },
+    {
+      "model": "claude-sonnet-4-20250514",
+      "provider": "anthropic"
+    }
   ],
-  "review_model": "qwen/qwq-32b",
+  "review_model": "llama-3.3-70b-versatile",
+  "review_provider": "groq",
   "scoring_model": "llama-3.1-8b-instant",
-  "planning_model": "llama-3.1-70b-versatile",
-  "memory_model": "gemini-2.0-flash",
+  "scoring_provider": "groq",
+  "planning_model": "llama-3.3-70b-versatile",
+  "planning_provider": "groq",
+  "memory_model": "gemini-2.5-flash",
+  "memory_provider": "google",
   "classifier_model": "llama-3.1-8b-instant",
+  "classifier_provider": "groq",
+  "workflow_detector_model": "llama-3.3-70b-versatile",
+  "workflow_detector_provider": "groq",
   "budget": {
-    "max_claude_tokens_per_day": 200000,
-    "max_groq_requests_per_day": 500,
-    "max_gemini_requests_per_day": 100
+    "max_gemini_requests_per_day": 50,
+    "max_groq_requests_per_day": 400,
+    "max_openrouter_requests_per_day": 30,
+    "max_claude_tokens_per_day": 0
   }
 }
 ```

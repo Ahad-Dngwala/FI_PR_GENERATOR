@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import structlog
 
 from integrations import github_client
+from memory.config_loader import get_model_name
 from memory.org_memory import load_org_memory, save_org_memory
 from memory.schemas import ActivityScore, OrgMemory, RejectionEntry, WorkflowRules
 
@@ -67,7 +68,7 @@ def _gemini_json_call(prompt: str, model: str = "gemini-2.0-flash") -> dict:
         return {}
 
 
-def _groq_json_call(prompt: str, model: str = "llama-3.1-70b-versatile") -> dict:
+def _groq_json_call(prompt: str, model: str = "llama-3.3-70b-versatile") -> dict:
     """
     Call Groq and parse the response as JSON.
 
@@ -223,10 +224,12 @@ Extract and return as JSON with exactly these keys:
 
 Respond with valid JSON only."""
 
-    result = _gemini_json_call(prompt)
+    model = get_model_name("memory_model", "gemini-2.0-flash")
+    result = _gemini_json_call(prompt, model=model)
     if not result:
         # Try Groq fallback
-        result = _groq_json_call(prompt)
+        fallback_model = get_model_name("workflow_detector_model", "llama-3.3-70b-versatile")
+        result = _groq_json_call(prompt, model=fallback_model)
     return result
 
 
@@ -328,11 +331,12 @@ Return ONLY valid JSON with this structure:
 Use null for fields where you have no evidence. Be honest about confidence.
 Respond with JSON only."""
 
-    # Try Groq Llama 70B first (good reasoning, free)
-    data = _groq_json_call(prompt, model="llama-3.1-70b-versatile")
+    detector_model = get_model_name("workflow_detector_model", "llama-3.3-70b-versatile")
+    data = _groq_json_call(prompt, model=detector_model)
     if not data:
         # Fallback to Gemini
-        data = _gemini_json_call(prompt)
+        fallback_model = get_model_name("memory_model", "gemini-2.0-flash")
+        data = _gemini_json_call(prompt, model=fallback_model)
 
     if not data:
         log.warning("memory_builder.workflow_detection_failed", org=org, repo=repo)

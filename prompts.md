@@ -312,12 +312,12 @@ approved = true even if there are minor issues (human will see them)
 
 | # | Prompt | LLM | Provider | Called By | Output |
 |---|--------|-----|----------|-----------|--------|
-| 1 | Issue Clarity | Llama 3.1 8B | Groq | scorer.py | Number 0-100 |
-| 2 | Test Classification | Llama 3.1 8B | Groq | test_runner.py | One class name |
-| 3 | Conventions Extraction | Gemini 2.0 Flash | Google AI | memory_builder.py | JSON dict |
-| 4 | Workflow Detection | Llama 70B | Groq | memory_builder.py | JSON WorkflowRules |
-| 5 | Code Generation | Gemini 2.5 Pro+chain | Multiple | coder.py | Unified diff |
-| 6 | Code Review | Qwen 32B Coder | Groq | reviewer.py | JSON verdict |
+| 1 | Issue Clarity | Configurable (Default: `llama-3.1-8b-instant`) | Groq | scorer.py | Number 0-100 |
+| 2 | Test Classification | Configurable (Default: `llama-3.1-8b-instant`) | Groq | test_runner.py | One class name |
+| 3 | Conventions Extraction | Configurable (Default: `gemini-2.0-flash`) | Google AI | memory_builder.py | JSON dict |
+| 4 | Workflow Detection | Configurable (Default: `llama-3.3-70b-versatile`) | Groq | memory_builder.py | JSON WorkflowRules |
+| 5 | Code Generation | Configurable (`coding_chain` fallback list) | Multiple | coder.py | Unified diff |
+| 6 | Code Review | Configurable (Default: `llama-3.3-70b-versatile`) | Groq | reviewer.py | JSON verdict |
 
 ## Debugging Checklist
 

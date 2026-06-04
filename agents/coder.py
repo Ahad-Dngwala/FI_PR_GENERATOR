@@ -16,6 +16,7 @@ from typing import Optional
 
 import structlog
 
+from memory.config_loader import get_coding_chain
 from memory.schemas import OrgMemory
 
 log = structlog.get_logger(__name__)
@@ -29,12 +30,7 @@ MAX_DIFF_LINES = 200
 PROMPT_TEMPLATE_PATH = Path("prompts/coder.txt")
 MAX_PROMPT_TOKENS = 40_000  # rough character limit (1 token ≈ 4 chars → ~160K chars)
 
-CODING_CHAIN: list[tuple[str, str]] = [
-    ("gemini/gemini-2.5-pro", "google"),
-    ("qwen/qwen-2.5-coder-72b-instruct", "openrouter"),
-    ("deepseek/deepseek-coder-v2", "openrouter"),
-    ("claude-sonnet-4-20250514", "anthropic"),
-]
+# CODING_CHAIN fallback order is loaded dynamically from config/models.json
 
 
 class AllModelsExhaustedError(Exception):
@@ -164,7 +160,8 @@ def generate_patch(
             f"Previous attempt failed with the following error. Fix it:\n{error_context[-1000:]}"
         )
 
-    for model_id, provider in CODING_CHAIN:
+    coding_chain = get_coding_chain()
+    for model_id, provider in coding_chain:
         log.info("coder.trying_model", model=model_id, provider=provider)
         patch = _call_model(model_id, provider, prompt)
         if patch:
