@@ -40,8 +40,9 @@
 15. [Prompt Architecture](#prompt-architecture)
 16. [Known Limitations & Mitigations](#known-limitations--mitigations)
 17. [Success Criteria](#success-criteria)
-18. [Roadmap](#roadmap)
+18. [Features & Roadmap](#features--roadmap)
 19. [What This Is NOT](#what-this-is-not)
+20. [Technical Overview](#technical-overview)
 
 ---
 
@@ -65,98 +66,46 @@ The system **cannot** push a branch, open a PR, or comment on an issue without y
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    Start(["DAILY SCHEDULER<br/>(cron or manual trigger)"]) --> Gate{"ACTIVITY + MEMORY GATE<br/>• Last commit &lt; 7d?<br/>• Last merge &lt; 14d?<br/>• Memory loaded?"}
+    Gate -- "DEAD" --> SkipOrg["SKIP ORG TODAY<br/>• Log reason"]
+    Gate -- "ACTIVE" --> Scorer["MULTI-SIGNAL ISSUE SCORER<br/>• Llama/Groq<br/>• Score: 0 – 100"]
+    
+    Scorer --> ScoreCheck{"Score &ge; 60?"}
+    ScoreCheck -- "NO" --> SkipIssue["SKIP + LOG REASON"]
+    ScoreCheck -- "YES" --> Context["CONTEXT RETRIEVER + VERIFIER<br/>• Aider repo-map<br/>• ripgrep symbol search<br/>• Human override"]
+    
+    Context --> Plan["PLAN MAKER<br/>• Scope lock + file list<br/>• Claude defines: target files, edge cases, test path"]
+    Plan --> Code["CLAUDE CODER + SCOPE GUARD<br/>• Aider applies edits: search/replace, no corrupt files<br/>• Auto-commit with natural commit messages"]
+    
+    Code --> ScopeCheck{"Diff &gt; 200 lines?"}
+    ScopeCheck -- "YES" --> RePlan["RE-PLAN<br/>• Reduce scope, retry"]
+    ScopeCheck -- "NO" --> Review["QWEN 2.5 CODER REVIEWER<br/>• Independent review<br/>• Catches Claude's blind spots"]
+    
+    Review --> Test["TEST RUNNER + FAILURE CLASSIFIER<br/>• lint • unit tests • typecheck • build"]
+    
+    Test --> Classifier{"Failure Class?"}
+    Classifier -- "CODE_BUG" --> BugRetry["CODE_BUG RETRY<br/>• Retry Claude (max 2x)"]
+    BugRetry --> Code
+    
+    Classifier -- "ENV_ISSUE / FLAKY / PREEXISTING" --> AppGate["NTFY APPROVAL GATE<br/>• HTTP POST to ntfy.sh/topic<br/>• Mobile push notification<br/>• 📁 Files 🧪 Tests ⚠️ Risk 🔗 Issue<br/>• ✅ Approve ❌ Reject"]
+    Classifier -- "PASS" --> AppGate
+    
+    AppGate -- "REJECT" --> LogRej["REJECT<br/>• Log rejection reason to org memory"]
+    LogRej --> Scorer
+    
+    AppGate -- "APPROVED" --> Rebase["REBASE + RE-ASSIGN CHECK + RETEST<br/>• git fetch origin & rebase main<br/>• Verify issue still assigned<br/>• Conflict too large? → abort & notify human"]
+    
+    Rebase --> PR["DRAFT PR via gh CLI<br/>• gh pr create --draft<br/>• PR body: change summary + test evidence + limitations"]
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         DAILY SCHEDULER                             │
-│                    (cron or manual trigger)                         │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   ACTIVITY + MEMORY GATE                 [TEAL]     │
-│   Last commit < 7d?  •  Last merge < 14d?  •  Memory loaded?        │
-└──────────┬──────────────────────────────────────┬───────────────────┘
-           │ ACTIVE                               │ DEAD
-           ▼                                      ▼
-┌─────────────────────────┐             ┌─────────────────────┐
-│  MULTI-SIGNAL ISSUE     │             │  SKIP ORG TODAY     │
-│  SCORER  (Llama/Groq)   │             │  log reason         │
-│  Score: 0 – 100         │             └─────────────────────┘
-└──────────┬──────────────┘
-           │
-     ┌─────┴─────┐
-     │ Score ≥60?│
-     └─────┬─────┘
-           │ YES                          NO ──► SKIP + LOG REASON
-           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                 CONTEXT RETRIEVER + VERIFIER             [PURPLE]   │
-│   Aider repo-map  •  ripgrep symbol search  •  human override       │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│              PLAN MAKER — scope lock + file list         [PURPLE]   │
-│         Claude defines: target files, edge cases, test path         │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│           CLAUDE CODER  +  SCOPE GUARD               [AMBER]        │
-│   • Aider applies edits (search/replace, no corrupt files)          │
-│   • Auto-commit with natural commit messages                        │
-│   • Diff > 200 lines?  →  reject + re-plan                          │
-└──────────┬──────────────────────────────────────┬───────────────────┘
-           │                                      │ SCOPE EXCEEDED
-           ▼                                      ▼
-┌─────────────────────────┐             ┌─────────────────────┐
-│  QWEN 2.5 CODER         │             │  RE-PLAN: reduce    │
-│  REVIEWER (independent) │             │  scope, retry       │
-│  Catches Claude's blind │             └─────────────────────┘
-│  spots                  │
-└──────────┬──────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│              TEST RUNNER + FAILURE CLASSIFIER            [AMBER]    │
-│    lint  •  unit tests  •  typecheck  •  build                      │
-│                                                                     │
-│    CODE_BUG ──► retry Claude (max 2x)                               │
-│    ENV_ISSUE ──► flag caveat, continue                              │
-│    FLAKY ──► retry once                                             │
-│    PREEXISTING ──► document in PR body, continue                    │
-└──────────┬──────────────────────────────────────────────────────────┘
-           │ PASS (or ENV_ISSUE flagged)
-           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                   NTFY APPROVAL GATE                 [CORAL]         │
-│   HTTP POST → ntfy.sh/topic → mobile push notification               │
-│   📁 Files  🧪 Tests  ⚠️ Risk  🔗 Issue  ✅ [Approve] ❌ [Reject] │
-│                                                                      │
-│   REJECT ──► log rejection reason to org memory                      │
-└──────────┬───────────────────────────────────────────────────────────┘
-           │ APPROVED
-           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│           REBASE + RE-ASSIGN CHECK + RETEST             [GREEN]     │
-│   git fetch origin  •  git rebase main  •  re-run tests             │
-│   verify issue still assigned to you                                │
-│   conflict too large? ──► abort + notify human                      │
-└──────────┬──────────────────────────────────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                  DRAFT PR via gh CLI                  [GREEN]       │
-│   gh pr create --draft --title "..." --body "Closes #N"             │
-│   PR body: change summary + test evidence + limitations             │
-└─────────────────────────────────────────────────────────────────────┘
 
-FALLBACK CHAIN (auto-switch on rate-limit or failure):
-┌────────────────────────────────┐
-│  1. Claude Sonnet  (primary)   │
-│  2. Qwen 2.5 Coder 72B         │
-│  3. DeepSeek Coder v2          │
-└────────────────────────────────┘
+### Fallback Chain (auto-switch on rate-limit or failure)
+```mermaid
+flowchart LR
+    G["1. Gemini 2.5 Pro<br/>Primary Coding Model (FREE)"] --> Q["2. Qwen 2.5 Coder 72B<br/>First Fallback (FREE)"]
+    Q --> D["3. DeepSeek Coder V2<br/>Second Fallback (FREE)"]
+    D --> C["4. Claude Sonnet<br/>Third Fallback (Paid last-resort)"]
 ```
 
 ---
@@ -428,23 +377,24 @@ def call_with_fallback(prompt: str) -> str:
 
 The test runner classifies failures using deterministic rules first (free, instant), then LLM fallback only if rules are inconclusive.
 
-```
-Test output
-    │
-    ├── contains "AssertionError" / "TypeError" / "NameError"?
-    │   └──► CODE_BUG → retry Claude with error log (max 2×)
-    │
-    ├── contains "ModuleNotFoundError" / "ENOENT" / "SECRET" / port errors?
-    │   └──► ENV_ISSUE → flag as caveat, continue to human
-    │
-    ├── test passed last run but failed this run (flake history)?
-    │   └──► FLAKY → retry once, then continue regardless
-    │
-    ├── test file unrelated to changed files?
-    │   └──► UNRELATED → stop, report as unexpected
-    │
-    └── known failing test in main branch (pre-check)?
-        └──► PREEXISTING → document in PR body, continue
+```mermaid
+flowchart TD
+    A[Test Run Output] --> B{Contains AssertionError,<br/>TypeError, or NameError?}
+    B -- Yes --> C[CODE_BUG]
+    C --> C1[Retry coding with error log<br/>Max 2 attempts]
+    B -- No --> D{Contains ModuleNotFoundError,<br/>ENOENT, SECRET, or port errors?}
+    D -- Yes --> E[ENV_ISSUE]
+    E --> E1[Flag as caveat in notification<br/>Let human decide]
+    D -- No --> F{Test passed last run but<br/>failed this run?}
+    F -- Yes --> G[FLAKY]
+    G --> G1[Silent retry once<br/>Continue regardless]
+    F -- No --> H{Test file unrelated to<br/>changed files?}
+    H -- Yes --> I[UNRELATED]
+    I --> I1[Stop execution<br/>Report as unexpected]
+    H -- No --> J{Known failing test in main branch<br/>prior to changes?}
+    J -- Yes --> K[PREEXISTING]
+    K --> K1[Document in PR body<br/>Continue pipeline]
+    J -- No --> L[UNKNOWN]
 ```
 
 | Class | Action | Human Notified? |
@@ -461,34 +411,27 @@ Test output
 
 The orchestrator operates through explicit serializable states. Every transition is logged.
 
-```
-                  ┌──────────────────────────────────────────────┐
-                  │                  IDLE                        │
-                  └──────────────────┬───────────────────────────┘
-                                     │ trigger
-                                     ▼
- SELECTING → CHECKING → PLANNING → RETRIEVING → CODING → REVIEWING
-                                                              │
-                                                              ▼
-                                                          TESTING
-                                                          │     │
-                                                      pass│     │fail→ CODING (retry)
-                                                          ▼
-                                               WAITING_APPROVAL
-                                                          │
-                                                   approve│   reject → log → SELECTING
-                                                          ▼
-                                                       PUSHING
-                                                          │
-                                                          ▼
-                                                   DRAFTING_PR
-                                                          │
-                                                          ▼
-                                                     COMPLETED
-
-At any step:
-    → BLOCKED  (insufficient context, permissions missing)
-    → FAILED   (max retries reached, unrecoverable error)
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE : Trigger
+    IDLE --> SELECTING
+    SELECTING --> CHECKING
+    CHECKING --> PLANNING
+    PLANNING --> RETRIEVING
+    RETRIEVING --> CODING
+    CODING --> REVIEWING
+    REVIEWING --> TESTING
+    TESTING --> CODING : Fail (Retry)
+    TESTING --> WAITING_APPROVAL : Pass / Env Issue
+    WAITING_APPROVAL --> PUSHING : Approve
+    WAITING_APPROVAL --> SELECTING : Reject (Log)
+    PUSHING --> DRAFTING_PR
+    DRAFTING_PR --> COMPLETED
+    
+    state "Any Step" as ANY_STEP {
+        [*] --> BLOCKED : Insufficient Context / Missing Permissions
+        [*] --> FAILED : Max Retries Reached / Unrecoverable Error
+    }
 ```
 
 **State persistence:** All states saved to `state/{run_id}.json`. Pipeline survives restarts, laptop sleep, and crashes.
@@ -617,7 +560,7 @@ fi-pr-generator/
 │   ├── github_client.py    # PyGitHub wrapper + rate-limit rotation + caching
 │   ├── git_ops.py          # GitPython: clone, branch, fetch, rebase, push
 │   ├── aider_runner.py     # Aider subprocess: repo-map + apply edits
-│   ├── telegram_bot.py     # Approval bot: diff display + inline buttons
+│   ├── ntfy_notifier.py    # Approval notifier & local Flask receiver server
 │   └── test_runner.py      # Test execution + failure classifier
 │
 ├── memory/
@@ -646,6 +589,8 @@ fi-pr-generator/
 ├── orchestrator.py         # Main pipeline runner (no LangGraph, pure Python)
 ├── main.py                 # CLI entry point (Click)
 ├── scheduler.py            # Cron wrapper + nightly memory refresh
+├── prompts.md              # [NEW] Complete catalog of prompts used in the project
+├── COMMANDS.md             # [NEW] Quick reference for CLI commands and testing instructions
 ├── .env.example            # API key template
 └── requirements.txt
 ```
@@ -692,15 +637,35 @@ fi-pr-generator/
 | **ntfy.sh** | Free push notifications — no app account needed |
 | Install | Download ntfy app on Android/iOS, subscribe to your topic |
 | Integration | Plain `requests.post()` — no SDK needed |
-| Action buttons | Via `Actions:` HTTP header |
+| Action buttons | Via JSON payload (UTF-8 safe) |
 
 ```python
-# ntfy approval notification — 4 lines of code
+# ntfy approval notification — via JSON payload to prevent header encoding issues
 import requests
-requests.post(f"{NTFY_URL}/{NTFY_TOPIC}",
-    data=f"PR ready: {issue_title}\nRisk: {risk_score}/100\nFiles: {files}",
-    headers={"Actions": f"approve, ✅ Approve, {server}/approve/{run_id}; "
-                        f"reject,  ❌ Reject,  {server}/reject/{run_id}"})
+payload = {
+    "topic": NTFY_TOPIC,
+    "message": f"PR ready: {issue_title}\nRisk: {risk_score}/100\nFiles: {files}",
+    "title": f"FI-PR: #{issue_number} — {issue_title}",
+    "priority": 3,
+    "tags": ["robot"],
+    "actions": [
+        {
+            "action": "http",
+            "label": "✅ Approve",
+            "url": f"{server}/approve/{run_id}",
+            "method": "POST",
+            "clear": True
+        },
+        {
+            "action": "http",
+            "label": "❌ Reject",
+            "url": f"{server}/reject/{run_id}",
+            "method": "POST",
+            "clear": True
+        }
+    ]
+}
+requests.post(NTFY_URL, json=payload)
 ```
 
 ### Storage
@@ -855,12 +820,33 @@ Outputs scored issue list. No GitHub writes.
 # Dry run — no GitHub writes, shows what would happen
 python main.py run --org GSSoC-ExtD --repo my-repo --dry-run
 
-# Real run — will send Telegram approval before any push
+# Real run — will send ntfy approval before any push
 python main.py run --org GSSoC-ExtD --repo my-repo
 
 # Target a specific issue (skip scoring step)
 python main.py run --org GSSoC-ExtD --repo my-repo --issue 42
 ```
+
+### 8. Try it Out — First Run Guide
+
+To test the system safely without making unexpected commits or PRs:
+
+1. **Verify your ntfy.sh Topic & Tunnel Connection:**
+   Run the interactive test utility to verify that notification delivery and local Flask routing are set up correctly:
+   ```bash
+   # 1. Start your ngrok/cloudflare tunnel on port 8080
+   ngrok http 8080
+   
+   # 2. In a separate terminal, trigger a test notification
+   python main.py test-notification
+   ```
+   A notification will appear on your phone. Tap **Approve** or **Reject** and verify that the terminal prints the confirmation.
+
+2. **Dry Run on a Real Issue:**
+   Try running the pipeline in `dry-run` mode to see it build context, write a patch, run local tests, and simulate approval without pushing anything:
+   ```bash
+   python main.py run --org Ahad-Dngwala --repo FI_PR_GENERATOR --issue 999 --dry-run
+   ```
 
 ---
 
@@ -905,16 +891,30 @@ Body:
 Actions:  [✅ Approve & Push]   [❌ Reject]
 ```
 
-ntfy HTTP headers used:
+ntfy JSON payload structure:
 ```python
-headers = {
-    "Title": "FI-PR — Approval needed: fix navbar #42",
-    "Priority": "high",
-    "Tags": "robot,white_check_mark",
-    "Actions": (
-        f"http, ✅ Approve, {SERVER_URL}/approve/{run_id}, method=POST; "
-        f"http, ❌ Reject,  {SERVER_URL}/reject/{run_id},  method=POST"
-    )
+payload = {
+    "topic": topic,
+    "message": body,
+    "title": title,
+    "priority": priority, # Integer: 4 for high, 3 for default
+    "tags": ["robot", risk_tag],
+    "actions": [
+        {
+            "action": "http",
+            "label": "✅ Approve",
+            "url": f"{server_url}/approve/{run_id}",
+            "method": "POST",
+            "clear": True
+        },
+        {
+            "action": "http",
+            "label": "❌ Reject",
+            "url": f"{server_url}/reject/{run_id}",
+            "method": "POST",
+            "clear": True
+        }
+    ]
 }
 ```
 
@@ -961,40 +961,34 @@ If above 40%: system is working — scale up carefully
 
 ---
 
-## Roadmap
+## 🌟 Features & Roadmap
 
-### Phase 1 — MVP (Weeks 1–3)
+### 🚀 Added Features
+* **UTF-8 Safe JSON Notifications**: Replaced legacy HTTP headers with a fully UTF-8 compliant JSON publishing payload, preventing crashes on unicode titles or special characters (e.g. em dash `—`).
+* **Built-in `test-notification` Sandbox Command**: A developer CLI command to easily trigger sandbox approval pushes to verify local-to-mobile routing via ngrok tunnels.
+* **Port Conflict Protection**: Flask server scans and auto-binds to alternate ports (8080–8090) dynamically when the default port is in use.
+* **API Key Fallback Guardrails**: Validates API keys at startup, skipping models without key configurations gracefully instead of throwing silent pipe exceptions.
+* **Prompt Inventory (`prompts.md`)**: Centrally documents LLM system and user prompts for easy tuning and debugging.
+* **Command Reference (`COMMANDS.md`)**: Reference for all development, pipeline execution, testing, and debugging commands.
 
-```
-[] Week 1:  github_client.py + scorer.py
-         → Can list and score issues. No coding yet.
-         → Validate: are scored issues actually good ones?
+### 🔮 Planned Future Features
+* **Localtunnel/Cloudflare Auto-tunneling**: Native integration to automatically spawn temporary Cloudflare/ngrok tunnels from the CLI without needing a separate terminal/setup.
+* **Custom Issue Scanning Queries**: Ability to customize issue search filters (e.g. filter by tag/no-tag, search text, date) directly from CLI arguments.
+* **Multi-User Permission Configuration**: Storing and rotating keys per organization or repository for developer-group contribution setups.
+* **Local Codebase Embeddings (Phase 3)**: Embedding files using ChromaDB to retrieve more relevant code context for generation.
 
-[] Week 2:  coder.py + aider_runner.py + ntfy_notifier.py
-         → Generates patches and sends approval request to ntfy.sh
-         → No PR creation yet
+### 📅 Development Roadmap
 
-[] Week 3:  test_runner.py + orchestrator.py
-         → Full pipeline end-to-end
-         → Prove ONE accepted PR
-```
+#### Phase 1 — MVP (Weeks 1–3) [COMPLETED]
+* Scorer engine (`scorer.py`), GitHub client (`github_client.py`), Aider engine (`aider_runner.py`), and notification approval gate (`ntfy_notifier.py`).
+* Full end-to-end pipeline run with dry-run support.
 
-### Phase 2 — Stability (Weeks 4–6)
+#### Phase 2 — Stability (Weeks 4–6) [IN PROGRESS]
+* Org memory caching & build utilities (`memory_builder.py`).
+* Robust state persistence, auto-restarts, fallback models, and validation error classifiers.
 
-```
-[] Week 4:  org_memory.py + memory_builder.py
-[] Week 5:  fallback chain + budget monitoring
-[] Week 6:  nightly scheduler + state persistence
-```
-
-### Phase 3 — Production (Weeks 7–10)
-
-```
-[] Week 7:  ripgrep + tree-sitter context layer
-[] Week 8:  environment detector (pre-test env check)
-[] Week 9:  multi-user support (per-user GitHub tokens)
-[] Week 10: dashboard + metrics collection
-```
+#### Phase 3 — Production (Weeks 7–10)
+* Local vector stores, pre-flight environment validators, and dashboard UI.
 
 ---
 
