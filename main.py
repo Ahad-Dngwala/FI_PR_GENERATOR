@@ -157,17 +157,20 @@ def scan_orgs(org: str, repo: str, min_score: float) -> None:
     from memory.org_memory import load_org_memory
     from memory.schemas import ActivityScore, OrgMemory
 
-    config_path = Path("config/orgs.json")
-    if not config_path.exists():
-        click.echo("❌ config/orgs.json not found. Create it from the template.", err=True)
-        raise SystemExit(1)
+    if org and repo:
+        orgs_cfg = [{"name": org, "repos": [{"name": repo, "enabled": True}]}]
+    else:
+        config_path = Path("config/orgs.json")
+        if not config_path.exists():
+            click.echo("❌ config/orgs.json not found. Create it from the template.", err=True)
+            raise SystemExit(1)
 
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    orgs_cfg = config.get("orgs", [])
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        orgs_cfg = config.get("orgs", [])
 
-    if not orgs_cfg:
-        click.echo("ℹ️  No orgs configured in config/orgs.json. Add some repos to scan.")
-        return
+        if not orgs_cfg:
+            click.echo("ℹ️  No orgs configured in config/orgs.json. Add some repos to scan.")
+            return
 
     for org_cfg in orgs_cfg:
         if org and org_cfg["name"] != org:

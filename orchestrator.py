@@ -119,17 +119,20 @@ def run_pipeline(
     # ORG WHITELIST VALIDATION
     # -----------------------------------------------------------------------
     try:
-        import json as _json
-        _orgs_path = Path("config/orgs.json")
-        if _orgs_path.exists():
-            _orgs_cfg = _json.loads(_orgs_path.read_text(encoding="utf-8"))
-            _allowed = [o.get("name") for o in _orgs_cfg.get("orgs", []) if isinstance(o, dict)]
-            if _allowed and org not in _allowed:
-                log.error("pipeline.org_not_whitelisted", org=org, allowed=_allowed)
-                return _transition(
-                    state, "blocked",
-                    failure_reason=f"Org '{org}' not in config/orgs.json whitelist. Add it first.",
-                )
+        if os.environ.get("DISABLE_ORG_WHITELIST", "").lower() == "true":
+            log.info("pipeline.whitelist_disabled_via_env")
+        else:
+            import json as _json
+            _orgs_path = Path("config/orgs.json")
+            if _orgs_path.exists():
+                _orgs_cfg = _json.loads(_orgs_path.read_text(encoding="utf-8"))
+                _allowed = [o.get("name") for o in _orgs_cfg.get("orgs", []) if isinstance(o, dict)]
+                if _allowed and org not in _allowed:
+                    log.error("pipeline.org_not_whitelisted", org=org, allowed=_allowed)
+                    return _transition(
+                        state, "blocked",
+                        failure_reason=f"Org '{org}' not in config/orgs.json whitelist. Add it first.",
+                    )
     except Exception as exc:
         log.warning("pipeline.whitelist_check_failed", error=str(exc))
 

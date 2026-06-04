@@ -210,7 +210,8 @@ def listen_for_commands(
                         continue
 
                     # Validate org against whitelist
-                    if allowed_orgs and org not in allowed_orgs:
+                    disable_whitelist = os.environ.get("DISABLE_ORG_WHITELIST", "").lower() == "true"
+                    if not disable_whitelist and allowed_orgs and org not in allowed_orgs:
                         log.warning("command_listener.org_rejected", org=org, allowed=allowed_orgs)
                         _send_status(
                             command_topic,

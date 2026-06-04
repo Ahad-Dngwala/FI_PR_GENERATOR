@@ -109,7 +109,7 @@ class TestGroqEndpoints:
             client = Groq(api_key=os.environ["GROQ_API_KEY"])
             resp = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": 'Return: {"status": "ok"}'}],
+                messages=[{"role": "user", "content": 'Return a JSON object: {"status": "ok"}'}],
                 max_tokens=20,
                 temperature=0.0,
                 response_format={"type": "json_object"},
@@ -143,10 +143,14 @@ class TestGeminiEndpoints:
 
     def _call(self, model: str, prompt: str = "Respond with only: OK") -> str:
         import google.generativeai as genai
-        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-        gmodel = genai.GenerativeModel(model)
-        resp = gmodel.generate_content(prompt)
-        return resp.text.strip()
+        try:
+            genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+            gmodel = genai.GenerativeModel(model)
+            resp = gmodel.generate_content(prompt)
+            return resp.text.strip()
+        except Exception as exc:
+            _skip_on_quota(exc, model)
+            raise
 
     def test_gemini_2_5_flash(self):
         """Gemini 2.5 Flash — ACTIVE memory/coder model."""
@@ -183,16 +187,20 @@ class TestGeminiEndpoints:
     def test_gemini_json_mode(self):
         """Verify Gemini JSON response mode (used in memory_builder)."""
         import google.generativeai as genai
-        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-        gmodel = genai.GenerativeModel("gemini-2.5-flash")
-        resp = gmodel.generate_content(
-            'Return a JSON object with key "status" set to "ok".',
-            generation_config={"response_mime_type": "application/json"},
-        )
-        import json
-        data = json.loads(resp.text)
-        assert "status" in data or len(data) > 0
-        print(f"\n  Gemini JSON mode: {data}")
+        try:
+            genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+            gmodel = genai.GenerativeModel("gemini-2.5-flash")
+            resp = gmodel.generate_content(
+                'Return a JSON object with key "status" set to "ok".',
+                generation_config={"response_mime_type": "application/json"},
+            )
+            import json
+            data = json.loads(resp.text)
+            assert "status" in data or len(data) > 0
+            print(f"\n  Gemini JSON mode: {data}")
+        except Exception as exc:
+            _skip_on_quota(exc, "gemini-2.5-flash")
+            raise
 
 
 # ---------------------------------------------------------------------------
