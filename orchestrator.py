@@ -115,6 +115,13 @@ def run_pipeline(
     state = _make_state(run_id, org, repo, "selecting")
     _save_state(state)
 
+    # Auto-register and whitelist/enable this repository in config/orgs.json, disabling others
+    try:
+        from integrations.command_listener import register_active_repos
+        register_active_repos([(org, repo)])
+    except Exception as exc:
+        log.warning("pipeline.auto_registration_failed", error=str(exc))
+
     # -----------------------------------------------------------------------
     # ORG WHITELIST VALIDATION
     # -----------------------------------------------------------------------

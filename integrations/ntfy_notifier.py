@@ -111,6 +111,11 @@ def send_approval_request(
         "tags": ["robot", risk_tag],
         "actions": [
             {
+                "action": "view",
+                "label": "🔍 View Diff",
+                "url": f"{server_url.rstrip('/')}/diff/{req.run_id}"
+            },
+            {
                 "action": "http",
                 "label": "✅ Approve",
                 "url": f"{server_url.rstrip('/')}/approve/{req.run_id}",
@@ -190,6 +195,70 @@ def start_approval_server(port: int = 8080) -> None:
                 _write_approval(run_id, approved=False)
                 log.info("ntfy.rejected", run_id=run_id)
                 return jsonify({"status": "rejected", "run_id": run_id})
+
+            @app.get("/diff/<run_id>")
+            def show_diff(run_id: str):
+                import html
+                diff_file = Path("diffs") / f"{run_id}.diff"
+                if not diff_file.exists():
+                    return "Diff not found on server. It might have been deleted.", 404
+                try:
+                    diff_content = diff_file.read_text(encoding="utf-8")
+                except Exception as e:
+                    return f"Error reading diff: {e}", 500
+
+                lines = diff_content.splitlines()
+                formatted_lines = []
+                for line in lines:
+                    escaped_line = html.escape(line)
+                    if line.startswith("+") and not line.startswith("+++"):
+                        formatted_lines.append(f'<span style="color:#3fb950;background-color:rgba(46,160,67,0.15);display:block;">{escaped_line}</span>')
+                    elif line.startswith("-") and not line.startswith("---"):
+                        formatted_lines.append(f'<span style="color:#f85149;background-color:rgba(248,81,73,0.15);display:block;">{escaped_line}</span>')
+                    elif line.startswith("@@") or line.startswith("diff ") or line.startswith("index "):
+                        formatted_lines.append(f'<span style="color:#8b949e;display:block;font-weight:bold;">{escaped_line}</span>')
+                    else:
+                        formatted_lines.append(f'<span style="display:block;">{escaped_line}</span>')
+                
+                formatted_html = "\n".join(formatted_lines)
+                
+                return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>PR Diff - {run_id}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }}
+        h2 {{
+            color: #58a6ff;
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 10px;
+            margin-top: 0;
+        }}
+        pre {{
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            overflow-x: auto;
+            font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }}
+    </style>
+</head>
+<body>
+    <h2>PR Patch Diff ({run_id})</h2>
+    <pre><code>{formatted_html}</code></pre>
+</body>
+</html>
+"""
 
             @app.get("/health")
             def health():

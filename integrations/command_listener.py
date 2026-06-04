@@ -59,6 +59,89 @@ def _load_allowed_orgs() -> list[str]:
         return []
 
 
+def _get_repos_for_org(org: str) -> list[str]:
+    """Get whitelisted repository names for a given organization."""
+    config_path = Path("config/orgs.json")
+    if not config_path.exists():
+        return []
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        for o in config.get("orgs", []):
+            if isinstance(o, dict) and o.get("name", "").lower() == org.lower():
+                return [r.get("name") if isinstance(r, dict) else r for r in o.get("repos", [])]
+        return []
+    except Exception:
+        return []
+
+
+def register_active_repos(targets: list[tuple[str, str]]) -> None:
+    """
+    Ensure the whitelisted targets are in config/orgs.json, mark them enabled: true,
+    and disable (enabled: false) all other repositories.
+    """
+    config_path = Path("config/orgs.json")
+    if not config_path.exists():
+        data = {
+            "orgs": [],
+            "issue_score_threshold": 60,
+            "max_diff_lines": 200,
+            "max_retries": 2,
+            "max_runs_per_hour": 3
+        }
+    else:
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+    target_set = {(o.lower(), r.lower()) for o, r in targets}
+    orgs_list = data.setdefault("orgs", [])
+
+    for o_name, r_name in targets:
+        # Find/create org
+        org_entry = None
+        for o in orgs_list:
+            if isinstance(o, dict) and o.get("name", "").lower() == o_name.lower():
+                org_entry = o
+                break
+        if not org_entry:
+            org_entry = {"name": o_name, "repos": []}
+            orgs_list.append(org_entry)
+
+        # Find/create repo
+        repos_list = org_entry.setdefault("repos", [])
+        repo_entry = None
+        for r in repos_list:
+            r_val = r.get("name") if isinstance(r, dict) else r
+            if r_val.lower() == r_name.lower():
+                repo_entry = r
+                break
+        if not repo_entry:
+            repos_list.append({"name": r_name, "enabled": True})
+
+    # Enable targets, disable others
+    for o in orgs_list:
+        if not isinstance(o, dict):
+            continue
+        o_name = o.get("name", "")
+        repos_list = o.setdefault("repos", [])
+        new_repos = []
+        for r in repos_list:
+            if isinstance(r, dict):
+                r_name = r.get("name", "")
+                r["enabled"] = (o_name.lower(), r_name.lower()) in target_set
+                new_repos.append(r)
+            else:
+                new_repos.append({"name": r, "enabled": (o_name.lower(), r.lower()) in target_set})
+        o["repos"] = new_repos
+
+    try:
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        log.info("orgs_config.updated_active_targets", targets=targets)
+    except Exception as exc:
+        log.warning("orgs_config.update_failed", error=str(exc))
+
+
 def _send_status(topic: str, message: str, token: str = "") -> None:
     """Send a status message back to the command topic."""
     ntfy_url = os.environ.get("NTFY_URL", "https://ntfy.sh")
@@ -79,21 +162,29 @@ def _send_status(topic: str, message: str, token: str = "") -> None:
         pass  # Best effort — don't crash the listener
 
 
-def _parse_command(message: str) -> tuple[Optional[str], Optional[str], bool]:
+def _parse_command(
+    message: str
+) -> tuple[list[tuple[str, str]], Optional[int], bool, str, Optional[str]]:
     """
-    Parse a command message into (org, repo, live_flag).
+    Parse a command message into (targets, issue_number, live_flag, mode_name, error_msg).
 
-    Accepted formats:
-      "org/repo"              → dry-run
-      "org/repo --live"       → live run
-      "org/repo --dry-run"    → dry-run (explicit)
-
-    Returns (None, None, False) if the message is not a valid command.
+    Supported formats:
+      1. Deep mode (single repo):
+         "org/repo"
+         "org/repo --live"
+         "org/repo --issue 123"
+      2. Selected mode (multiple repos in an org):
+         "org/repo1,repo2"
+         "org/repo1,repo2 --live"
+      3. Org mode (entire org):
+         "org"
+         "org --live"
     """
     text = message.strip()
-    if not text or "/" not in text:
-        return None, None, False
+    if not text:
+        return [], None, False, "unknown", "Empty command"
 
+    # 1. Parse live/dry-run options
     live = False
     if "--live" in text:
         text = text.replace("--live", "").strip()
@@ -101,23 +192,70 @@ def _parse_command(message: str) -> tuple[Optional[str], Optional[str], bool]:
     if "--dry-run" in text:
         text = text.replace("--dry-run", "").strip()
         live = False
+    if "--dryrun" in text:
+        text = text.replace("--dryrun", "").strip()
+        live = False
 
+    # 2. Parse issue option using regex
+    import re
+    issue_number = None
+    issue_match = re.search(r"--issue\s+(\d+)", text)
+    if issue_match:
+        issue_number = int(issue_match.group(1))
+        text = re.sub(r"--issue\s+\d+", "", text).strip()
+    else:
+        issue_match = re.search(r"--issue=(\d+)", text)
+        if issue_match:
+            issue_number = int(issue_match.group(1))
+            text = re.sub(r"--issue=\d+", "", text).strip()
+        else:
+            issue_match = re.search(r"-i\s+(\d+)", text)
+            if issue_match:
+                issue_number = int(issue_match.group(1))
+                text = re.sub(r"-i\s+\d+", "", text).strip()
+
+    # 3. Determine if it's org mode or repo mode
+    if "/" not in text:
+        # Org mode
+        org = text.strip()
+        # Basic validation
+        if not re.match(r"^[a-zA-Z0-9._-]+$", org):
+            return [], None, False, "org", f"Invalid organization name format: '{org}'"
+
+        repos = _get_repos_for_org(org)
+        if not repos:
+            return [], None, False, "org", f"No repositories configured in config/orgs.json for org '{org}'"
+
+        targets = [(org, r) for r in repos]
+        return targets, issue_number, live, "org", None
+
+    # Repo mode (Selected or Deep)
     parts = text.split("/", 1)
     if len(parts) != 2:
-        return None, None, False
+        return [], None, False, "unknown", "Invalid command format. Use org/repo or org/repo1,repo2"
 
     org = parts[0].strip()
-    repo = parts[1].strip()
+    repos_part = parts[1].strip()
 
-    if not org or not repo:
-        return None, None, False
+    if not org or not repos_part:
+        return [], None, False, "unknown", "Org or repository name cannot be empty"
 
-    # Basic sanitation — only allow alphanumeric, dash, underscore, dot
-    import re
-    if not re.match(r"^[a-zA-Z0-9._-]+$", org) or not re.match(r"^[a-zA-Z0-9._-]+$", repo):
-        return None, None, False
+    if not re.match(r"^[a-zA-Z0-9._-]+$", org):
+        return [], None, False, "unknown", f"Invalid organization name format: '{org}'"
 
-    return org, repo, live
+    # Split repos by comma or space
+    repo_names = [r.strip() for r in re.split(r"[\s,]+", repos_part) if r.strip()]
+    if not repo_names:
+        return [], None, False, "unknown", "No repository names found in command"
+
+    # Validate repo formats
+    for r in repo_names:
+        if not re.match(r"^[a-zA-Z0-9._-]+$", r):
+            return [], None, False, "unknown", f"Invalid repository name format: '{r}'"
+
+    targets = [(org, r) for r in repo_names]
+    mode = "deep" if len(targets) == 1 else "selected"
+    return targets, issue_number, live, mode, None
 
 
 def listen_for_commands(
@@ -192,34 +330,54 @@ def listen_for_commands(
                     if msg.get("event") != "message":
                         continue
 
+                    # LOOP PREVENTION: Ignore status updates sent by the bot itself
+                    title = msg.get("title", "")
+                    tags = msg.get("tags", []) or []
+                    if title == "FI-PR Pipeline Status" or "gear" in tags:
+                        continue
+
                     text = msg.get("message", "").strip()
                     if not text:
+                        continue
+
+                    if any(text.startswith(p) for p in [
+                        "🚀 Starting pipeline",
+                        "⏳ Rate limited",
+                        "❌ Invalid command",
+                        "❌ Pipeline",
+                        "⚠️ Pipeline",
+                        "✅ Pipeline",
+                        "⏳ Hourly limit",
+                    ]):
                         continue
 
                     log.info("command_listener.received", message=text)
 
                     # Parse the command
-                    org, repo, live_requested = _parse_command(text)
-                    if not org or not repo:
-                        log.warning("command_listener.invalid_command", raw=text)
+                    targets, issue_number, live_requested, mode_name, error_msg = _parse_command(text)
+                    if error_msg or not targets:
+                        log.warning("command_listener.invalid_command", raw=text, error=error_msg)
                         _send_status(
                             command_topic,
-                            f"❌ Invalid command: '{text}'\nUse format: org/repo",
+                            f"❌ Invalid command: '{text}'\nError: {error_msg or 'No targets found'}\nUse formats: org, org/repo, or org/repo1,repo2",
                             token,
                         )
                         continue
 
                     # Validate org against whitelist
                     disable_whitelist = os.environ.get("DISABLE_ORG_WHITELIST", "").lower() == "true"
-                    if not disable_whitelist and allowed_orgs and org not in allowed_orgs:
-                        log.warning("command_listener.org_rejected", org=org, allowed=allowed_orgs)
-                        _send_status(
-                            command_topic,
-                            f"❌ Org '{org}' not in whitelist.\n"
-                            f"Allowed: {', '.join(allowed_orgs)}",
-                            token,
-                        )
-                        continue
+                    if not disable_whitelist and allowed_orgs:
+                        rejected_orgs = [o for o, r in targets if o not in allowed_orgs]
+                        if rejected_orgs:
+                            log.warning("command_listener.org_rejected", rejected=rejected_orgs, allowed=allowed_orgs)
+                            _send_status(
+                                command_topic,
+                                f"❌ Org whitelist violation.\n"
+                                f"Orgs not whitelisted: {', '.join(set(rejected_orgs))}\n"
+                                f"Allowed: {', '.join(allowed_orgs)}",
+                                token,
+                            )
+                            continue
 
                     # Rate limiting
                     now = time.monotonic()
@@ -256,55 +414,72 @@ def listen_for_commands(
                             token,
                         )
 
-                    mode = "DRY RUN" if dry_run else "LIVE"
+                    mode_desc = f"{mode_name.upper()} mode"
+                    targets_desc = ", ".join(f"{o}/{r}" for o, r in targets)
+                    run_mode = "DRY RUN" if dry_run else "LIVE"
+
                     _send_status(
                         command_topic,
-                        f"🚀 Starting pipeline [{mode}]: {org}/{repo}",
+                        f"🚀 Starting pipeline ({mode_desc} - [{run_mode}]): {targets_desc}",
                         token,
                     )
 
-                    # Run the pipeline
-                    try:
-                        from orchestrator import run_pipeline
+                    # Auto-register and whitelist/enable all targets of this run, disabling all others
+                    register_active_repos(targets)
 
-                        last_run_time = time.monotonic()
-                        run_timestamps.append(last_run_time)
+                    # Run the pipeline sequentially for all targets
+                    for org, repo in targets:
+                        try:
+                            from orchestrator import run_pipeline
 
-                        log.info(
-                            "command_listener.running_pipeline",
-                            org=org, repo=repo, dry_run=dry_run,
-                        )
+                            last_run_time = time.monotonic()
+                            run_timestamps.append(last_run_time)
 
-                        final_state = run_pipeline(
-                            org=org, repo=repo, dry_run=dry_run,
-                        )
-
-                        # Send result summary
-                        status_icon = "✅" if final_state.state == "completed" else "⚠️"
-                        summary_lines = [
-                            f"{status_icon} Pipeline {final_state.state.upper()}: {org}/{repo}",
-                        ]
-                        if final_state.issue_number:
-                            summary_lines.append(f"Issue: #{final_state.issue_number}")
-                        if final_state.model_used:
-                            summary_lines.append(f"Model: {final_state.model_used}")
-                        if final_state.risk_score:
-                            summary_lines.append(
-                                f"Risk: {final_state.risk_score.level} "
-                                f"({final_state.risk_score.score:.0f}/100)"
+                            log.info(
+                                "command_listener.running_pipeline",
+                                org=org, repo=repo, dry_run=dry_run,
                             )
-                        if final_state.failure_reason:
-                            summary_lines.append(f"Reason: {final_state.failure_reason[:100]}")
 
-                        _send_status(command_topic, "\n".join(summary_lines), token)
+                            final_state = run_pipeline(
+                                org=org, repo=repo, dry_run=dry_run, issue_number=issue_number
+                            )
 
-                    except Exception as exc:
-                        log.error("command_listener.pipeline_error", error=str(exc))
-                        _send_status(
-                            command_topic,
-                            f"❌ Pipeline crashed: {str(exc)[:200]}",
-                            token,
-                        )
+                            # Send result summary
+                            status_icon = "✅" if final_state.state == "completed" else "⚠️"
+                            summary_lines = [
+                                f"{status_icon} Pipeline {final_state.state.upper()}: {org}/{repo}",
+                            ]
+                            if final_state.issue_number:
+                                summary_lines.append(f"Issue: #{final_state.issue_number}")
+                            if final_state.model_used:
+                                summary_lines.append(f"Model: {final_state.model_used}")
+                            if final_state.risk_score:
+                                summary_lines.append(
+                                    f"Risk: {final_state.risk_score.level} "
+                                    f"({final_state.risk_score.score:.0f}/100)"
+                                )
+                            if final_state.failure_reason:
+                                summary_lines.append(f"Reason: {final_state.failure_reason[:100]}")
+
+                            _send_status(command_topic, "\n".join(summary_lines), token)
+
+                        except Exception as exc:
+                            log.error("command_listener.pipeline_error", org=org, repo=repo, error=str(exc))
+                            _send_status(
+                                command_topic,
+                                f"❌ Pipeline crashed on {org}/{repo}: {str(exc)[:200]}",
+                                token,
+                            )
+
+        except requests.ConnectionError:
+            log.warning("command_listener.connection_lost", retry_seconds=30)
+            time.sleep(30)
+        except KeyboardInterrupt:
+            log.info("command_listener.stopped")
+            break
+        except Exception as exc:
+            log.error("command_listener.error", error=str(exc))
+            time.sleep(30)
 
         except requests.ConnectionError:
             log.warning("command_listener.connection_lost", retry_seconds=30)
