@@ -21,6 +21,12 @@ def get_model_name(key: str, default: str) -> str:
     return config.get(key, default)
 
 
+def get_model_provider(key: str, default: str) -> str:
+    """Get the provider name for a specific key, falling back to default."""
+    config = load_models_config()
+    return config.get(key, default)
+
+
 def get_coding_chain() -> list[tuple[str, str]]:
     """Get the coding fallback chain as a list of (model, provider) tuples."""
     config = load_models_config()

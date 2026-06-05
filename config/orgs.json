@@ -5,7 +5,7 @@
       "repos": [
         {
           "name": "nyay-setu-working",
-          "enabled": true
+          "enabled": false
         }
       ]
     },
@@ -15,6 +15,60 @@
         {
           "name": "DailyForge",
           "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "ItsVikasA",
+      "repos": [
+        {
+          "name": "Innovision-Open-Source",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "dhairyagothi",
+      "repos": [
+        {
+          "name": "100_days_100_project",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "santanu-atta03",
+      "repos": [
+        {
+          "name": "Intervyo",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "siddu-k",
+      "repos": [
+        {
+          "name": "bashmanager",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "arshchouhan",
+      "repos": [
+        {
+          "name": "Ment2Be",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "mdazfar2",
+      "repos": [
+        {
+          "name": "HelpOps-Hub",
+          "enabled": true
         }
       ]
     }

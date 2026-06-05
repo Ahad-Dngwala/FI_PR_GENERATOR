@@ -12,7 +12,7 @@ import os
 
 import structlog
 
-from memory.config_loader import get_model_name
+from memory.config_loader import get_model_name, get_model_provider
 from memory.schemas import OrgMemory
 
 log = structlog.get_logger(__name__)
@@ -41,8 +41,12 @@ def review_patch(
     - CRITICAL issues → (False, issues) — pipeline stops, coder retried
     - MINOR issues    → (True, issues)  — human sees notes in ntfy, pipeline continues
     """
+    provider = get_model_provider("review_provider", "groq")
+    model = get_model_name("review_model", "llama-3.3-70b-versatile")
+
+    # Only enforce GROQ_API_KEY check if we actually need Groq and aren't using Ollama
     api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
+    if provider == "groq" and not api_key:
         log.warning(
             "reviewer.no_groq_key",
             fallback="Approving with warning — reviewer unavailable",
@@ -86,19 +90,39 @@ Respond ONLY as valid JSON:
 approved = false only if there are critical issues.
 approved = true even if there are minor issues (human will see them)."""
 
+    raw = None
     try:
-        from groq import Groq
+        # Try Ollama review
+        if provider == "ollama":
+            try:
+                from integrations.ollama_client import call_ollama
+                raw = call_ollama(
+                    model=model,
+                    prompt=prompt,
+                    temperature=0.2,
+                    max_tokens=2000,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as exc:
+                log.warning("reviewer.ollama_failed", error=str(exc)[:100], fallback="groq")
 
-        client = Groq(api_key=api_key)
-        model = get_model_name("review_model", "llama-3.3-70b-versatile")
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-        raw = response.choices[0].message.content.strip()
+        # Try Groq review (either as primary or fallback)
+        if not raw:
+            if provider == "groq" or (provider != "ollama" and api_key):
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                response = client.chat.completions.create(
+                    model=model if provider == "groq" else "llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000,
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content.strip()
+
+        if not raw:
+            raise RuntimeError("No LLM review response generated")
+
         data = json.loads(raw)
 
         approved: bool = bool(data.get("approved", True))

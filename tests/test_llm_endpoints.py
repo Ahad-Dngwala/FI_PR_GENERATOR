@@ -321,3 +321,50 @@ class TestGitHubEndpoint:
             "GitHub rate limit exhausted! Wait until reset: "
             + str(rate.rate.reset)
         )
+
+
+# ---------------------------------------------------------------------------
+# Local Ollama Smoke Test
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaEndpoints:
+    """Verify local Ollama is running and configured models respond."""
+
+    @pytest.fixture(autouse=True)
+    def check_ollama_status(self):
+        import socket
+        try:
+            # Check if localhost:11434 is open
+            with socket.create_connection(("localhost", 11434), timeout=1.0):
+                pass
+        except Exception:
+            pytest.skip("Local Ollama is not running on localhost:11434. Start Ollama to run this test.")
+
+    def test_qwen_7b(self):
+        """Verify qwen2.5:7b responds and caches successfully."""
+        import time
+        from integrations.ollama_client import call_ollama
+        
+        prompt = "Respond with exactly: OK"
+        
+        # 1. First execution - cache miss or hit
+        result1 = call_ollama(model="qwen2.5:7b", prompt=prompt)
+        assert "OK" in result1.upper(), f"Expected OK, got: {result1}"
+        
+        # 2. Second execution - guaranteed cache hit
+        start = time.time()
+        result2 = call_ollama(model="qwen2.5:7b", prompt=prompt)
+        duration = time.time() - start
+        
+        assert "OK" in result2.upper()
+        # Cache hit should be near-instantaneous (<0.6 seconds) compared to local CPU inference
+        assert duration < 0.6, f"Cache retrieval was slow: {duration}s"
+        print(f"\n  qwen2.5:7b responded: {result2!r} (cache retrieval: {duration:.4f}s)")
+        
+    def test_gemma_12b(self):
+        """Verify gemma4:12b responds and handles low-temperature orchestration rules."""
+        from integrations.ollama_client import call_ollama
+        result = call_ollama(model="gemma4:12b", prompt="Respond with only: OK")
+        assert "OK" in result.upper(), f"Expected OK, got: {result}"
+        print(f"\n  gemma4:12b responded: {result!r}")

@@ -11,12 +11,13 @@ Caching: requests_cache installed globally (SQLite backend, gitignored).
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
 import requests_cache
 import structlog
-from github import Github, GithubException, RateLimitExceededException, UnknownObjectException
+from github import Auth, Github, GithubException, RateLimitExceededException, UnknownObjectException
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -444,6 +445,107 @@ def get_bot_comments(org: str, repo: str, limit: int = 30) -> list[str]:
     except GithubException as exc:
         log.warning("github.get_bot_comments_failed", org=org, repo=repo, error=str(exc))
     return comments
+
+
+def is_collaborator(org: str, repo: str, github_username: str) -> bool:
+    """
+    Return True if github_username has write access to org/repo.
+    Uses GET /repos/{owner}/{repo}/collaborators/{username}
+    Returns False on 404 (not collaborator) or any error.
+    Never raises — always returns bool.
+    """
+    try:
+        g = _get_client()
+        r = _safe_call(g.get_repo, f"{org}/{repo}")
+        return _safe_call(r.has_in_collaborators, github_username)
+    except Exception as exc:
+        log.warning("github.is_collaborator_check_failed", org=org, repo=repo, user=github_username, error=str(exc))
+        return False
+
+
+def get_or_create_fork(org: str, repo: str) -> tuple[str, str]:
+    """
+    Ensure the authenticated user has a fork of org/repo.
+    If fork already exists, return it.
+    If not, create it and wait for GitHub to provision it (with exponential backoff).
+
+    Returns: (fork_owner, fork_repo_name)
+    Example: ("Ahad-Dngwala", "nyay-setu-working")
+    """
+    g = _get_client()
+    user = _safe_call(g.get_user)
+    upstream = _safe_call(g.get_repo, f"{org}/{repo}")
+
+    # Check if fork already exists
+    fork_name = repo
+    try:
+        existing = _safe_call(g.get_repo, f"{user.login}/{fork_name}")
+        if existing.fork and existing.parent.full_name == f"{org}/{repo}":
+            log.info("github.fork_exists",
+                     fork=f"{user.login}/{fork_name}",
+                     upstream=f"{org}/{repo}")
+            return user.login, fork_name
+    except Exception:
+        pass
+
+    # Create fork
+    log.info("github.forking", upstream=f"{org}/{repo}")
+    fork = _safe_call(upstream.create_fork)
+
+    # Wait for GitHub to provision the fork (with exponential backoff)
+    delay = 2.0
+    for attempt in range(8):  # 2 + 4 + 8 + 16 + 32 + 64... = ~126s max wait
+        try:
+            fork_repo = g.get_repo(f"{user.login}/{fork_name}")
+            # Ensure default branch is populated and accessible
+            _ = fork_repo.default_branch
+            log.info("github.fork_created",
+                     fork=f"{user.login}/{fork_name}",
+                     attempt=attempt + 1)
+            return user.login, fork_name
+        except Exception:
+            log.info("github.fork_not_ready_yet",
+                     fork=f"{user.login}/{fork_name}",
+                     wait_seconds=delay,
+                     attempt=attempt + 1)
+            time.sleep(delay)
+            delay *= 2.0
+
+    raise RuntimeError(f"Fork not available/ready after 2 minutes: {user.login}/{fork_name}")
+
+
+def sync_fork_with_upstream(fork_owner: str, fork_repo: str,
+                             upstream_org: str, upstream_repo: str) -> bool:
+    """
+    Sync the fork's default branch with upstream main/master.
+    Uses GitHub API: POST /repos/{fork_owner}/{fork_repo}/merge-upstream
+    Returns True on success, False on failure (non-fatal — proceed anyway).
+    """
+    try:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        g = _get_client()
+        upstream = _safe_call(g.get_repo, f"{upstream_org}/{upstream_repo}")
+        default_branch = upstream.default_branch
+
+        resp = requests.post(
+            f"https://api.github.com/repos/{fork_owner}/{fork_repo}/merge-upstream",
+            json={"branch": default_branch},
+            headers=headers,
+            timeout=15
+        )
+        if resp.status_code in (200, 409):
+            log.info("github.fork_synced", fork=f"{fork_owner}/{fork_repo}")
+            return True
+        log.warning("github.fork_sync_failed", status=resp.status_code, body=resp.text[:200])
+        return False
+    except Exception as e:
+        log.warning("github.fork_sync_error", error=str(e))
+        return False
 
 
 # ---------------------------------------------------------------------------

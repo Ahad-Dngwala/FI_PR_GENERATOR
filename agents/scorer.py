@@ -7,13 +7,15 @@ The only external call is Llama 3.1 8B on Groq for issue clarity scoring.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
 
-from memory.config_loader import get_model_name
+from memory.config_loader import get_model_name, get_model_provider
 from memory.schemas import ActivityScore, IssueScore, OrgMemory, RiskScore
 
 log = structlog.get_logger(__name__)
@@ -120,22 +122,26 @@ def compute_issue_score(
     org_memory: OrgMemory,
     activity: ActivityScore,
 ) -> IssueScore:
-    """
-    Compute a 0–100 eligibility score for a single GitHub issue.
+    """Compute a 0–100 eligibility score for a single GitHub issue."""
+    body = (issue.get("body") or "").lower()
+    title = (issue.get("title") or "").lower()
+    combined_text = f"{title}\n{body}"
+    clarity = _score_clarity(combined_text, issue.get("number", 0))
+    return _compute_full_score(issue, clarity, org_memory, activity)
 
-    Components:
-        clarity:    Llama 3.1 8B clarity rating via Groq
-        scope:      File count estimate from keywords in issue text
-        historical: Similarity to accepted PR types in org memory
-        testability: Test dir known + issue mentions test/spec
-        label_bonus: Good-first-issue/bug/documentation bonus
-    """
+
+def _compute_full_score(
+    issue: dict,
+    clarity: float,
+    org_memory: OrgMemory,
+    activity: ActivityScore,
+) -> IssueScore:
+    """Helper to calculate the final weighted issue score from a pre-determined clarity rating."""
     body = (issue.get("body") or "").lower()
     title = (issue.get("title") or "").lower()
     labels = [lbl.lower() for lbl in issue.get("labels", [])]
     combined_text = f"{title}\n{body}"
 
-    clarity = _score_clarity(combined_text, issue.get("number", 0))
     scope = _score_scope(combined_text)
     historical = _score_historical(title, org_memory)
     testability = _score_testability(body, org_memory)
@@ -186,6 +192,248 @@ def compute_issue_score(
     )
 
 
+def _quick_filter(issue: dict) -> tuple[bool, str]:
+    """
+    Free instant pre-filter. No API calls. Returns (passed, reason).
+    Eliminates ~65% of issues before any LLM scoring.
+    """
+    # 1. Already assigned check
+    if issue.get("assignee") or issue.get("assignees"):
+        return False, "assigned"
+    
+    # 2. Locked check
+    if issue.get("locked"):
+        return False, "locked"
+    
+    # 3. PR check
+    if issue.get("pull_request") is not None:
+        return False, "is_pr"
+    
+    # 4. Description body length check
+    body = issue.get("body") or ""
+    if len(body.strip()) < 30:
+        return False, "no_body"
+    
+    # 5. Stale check (older than 60 days)
+    created = issue.get("created_at")
+    if created:
+        try:
+            if isinstance(created, str):
+                from dateutil.parser import parse
+                created_dt = parse(created)
+            else:
+                created_dt = created
+            
+            # Make timezone aware
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            
+            age_days = (datetime.now(timezone.utc) - created_dt).days
+            if age_days > 60:
+                return False, "stale"
+        except Exception:
+            pass
+
+    # 6. Bad label checks
+    bad_labels = {
+        "wontfix", "invalid", "duplicate", "blocked", "needs-discussion",
+        "on hold", "deferred", "question", "help wanted"
+    }
+    labels_clean = set()
+    for l in issue.get("labels", []):
+        if isinstance(l, dict):
+            labels_clean.add(l.get("name", "").lower())
+        else:
+            labels_clean.add(str(l).lower())
+
+    if labels_clean & bad_labels:
+        return False, "bad_label"
+
+    return True, "pass"
+
+
+def _parse_batch_json(raw: str) -> dict[int, float]:
+    """Robustly parse a JSON string from LLM response, with regex repair fallback."""
+    raw_cleaned = raw.strip()
+    
+    # 1. Direct JSON parse
+    try:
+        data = json.loads(raw_cleaned)
+        return {int(k): float(v) for k, v in data.items()}
+    except Exception:
+        pass
+
+    # 2. Extract JSON block (e.g. inside ```json ... ```)
+    try:
+        match = re.search(r"(\{.*\})", raw_cleaned, re.DOTALL)
+        if match:
+            data = json.loads(match.group(1))
+            return {int(k): float(v) for k, v in data.items()}
+    except Exception:
+        pass
+
+    # 3. Regex parser fallback
+    results = {}
+    try:
+        pattern = re.compile(r'(?:"?(\d+)"?)\s*:\s*(\d+(?:\.\d+)?)')
+        for m in pattern.finditer(raw_cleaned):
+            k = int(m.group(1))
+            v = float(m.group(2))
+            results[k] = v
+    except Exception:
+        pass
+
+    return results
+
+
+def _score_clarity_batch(issues: list[dict]) -> dict[int, float]:
+    """
+    Score the clarity of multiple issues in ONE API call.
+    Returns {issue_number: clarity_score}
+    """
+    if not issues:
+        return {}
+
+    # Build a compact issue list (titles + first 400 chars of body)
+    issue_text_list = []
+    for i in issues:
+        num = i.get("number", 0)
+        title = i.get("title", "")
+        body = i.get("body") or ""
+        issue_text_list.append(f"[{num}] Title: {title}\nBody: {body[:400]}")
+    
+    issue_text = "\n\n".join(issue_text_list)
+
+    prompt = (
+        "Score the clarity of each GitHub issue from 0 to 100.\n\n"
+        "Scoring guide:\n"
+        "- 90-100: Has exact reproduction steps, expected vs actual behavior, clear acceptance criteria\n"
+        "- 70-89: Has most key details, minor ambiguity\n"
+        "- 50-69: Partial context, some steps missing\n"
+        "- 30-49: Vague, missing key info\n"
+        "- 0-29: One-liner, no context\n\n"
+        "Issues to score:\n"
+        f"{issue_text}\n\n"
+        "Respond ONLY as a valid JSON object where keys are issue numbers (as strings) and values are numerical scores.\n"
+        "Example: {\"1234\": 85, \"1235\": 42}"
+    )
+
+    provider = get_model_provider("scoring_provider", "groq")
+    model = get_model_name("scoring_model", "llama-3.1-8b-instant")
+
+    # Try Ollama first if configured
+    if provider == "ollama":
+        try:
+            from integrations.ollama_client import call_ollama
+            raw = call_ollama(
+                model=model,
+                prompt=prompt,
+                temperature=0.2,
+                max_tokens=600,
+                response_format={"type": "json_object"},
+            )
+            return _parse_batch_json(raw)
+        except Exception as exc:
+            log.warning("scorer.clarity_ollama_batch_failed", error=str(exc)[:100], fallback="groq/gemini")
+
+    # Try Groq (as fallback or primary if configured)
+    if provider == "groq" or (provider != "ollama" and os.environ.get("GROQ_API_KEY")):
+        api_key = os.environ.get("GROQ_API_KEY")
+        if api_key:
+            try:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=600,
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content
+                return _parse_batch_json(raw)
+            except Exception as exc:
+                log.warning("scorer.clarity_groq_batch_failed", error=str(exc)[:100], fallback="gemini")
+
+    # Fallback: try Gemini Flash
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_key)
+            gmodel = genai.GenerativeModel("gemini-2.5-flash")
+            response = gmodel.generate_content(prompt + "\nRespond with JSON only.")
+            raw = response.text
+            return _parse_batch_json(raw)
+        except Exception as exc:
+            log.warning("scorer.clarity_gemini_batch_failed", error=str(exc)[:100], fallback="heuristic")
+
+    # Final fallback: heuristic clarity for each issue individually
+    log.warning("scorer.batch_llm_failed", fallback="heuristic")
+    return {i["number"]: _heuristic_clarity((i.get("title") or "") + "\n" + (i.get("body") or "")) for i in issues}
+
+
+def score_issues_batch(
+    issues: list[dict],
+    org_memory: OrgMemory,
+    activity: ActivityScore,
+) -> list[IssueScore]:
+    """
+    Score ALL issues in one or two API calls instead of one per issue.
+    
+    Flow:
+    1. Apply heuristic pre-filter (free, instant)
+    2. Batch remaining issues into groups of 40
+    3. ONE Groq call per batch for clarity scoring (fallback to Gemini or heuristics)
+    4. Apply full IssueScore formula to each
+    
+    Returns: list of IssueScore sorted by score descending
+    """
+    candidates = []
+    skipped = []
+    
+    for issue in issues:
+        passed, reason = _quick_filter(issue)
+        if passed:
+            candidates.append(issue)
+        else:
+            skipped.append((issue.get("number"), reason))
+
+    log.info("scorer.heuristic_filter", total=len(issues), passed=len(candidates), skipped_count=len(skipped))
+
+    # Batch clarity scoring for candidates
+    clarity_scores = {}
+    batch_size = 40
+    
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i:i + batch_size]
+        batch_scores = _score_clarity_batch(batch)
+        clarity_scores.update(batch_scores)
+
+    results = []
+    for issue in issues:
+        num = issue.get("number", 0)
+        # If it was a candidate and has an LLM score, use it
+        if any(c["number"] == num for c in candidates):
+            clarity = clarity_scores.get(num, 47.5)  # default heuristic if LLM missed it
+            score_obj = _compute_full_score(issue, clarity, org_memory, activity)
+        else:
+            # skipped by pre-filter, assign 0 clarity
+            clarity = 0.0
+            score_obj = _compute_full_score(issue, clarity, org_memory, activity)
+            score_obj.decision = "reject"
+            # Find reason
+            reason = next(r for n, r in skipped if n == num)
+            score_obj.rejection_reason = f"Heuristic filter: {reason}"
+            score_obj.score = 0.0  # Set score to 0 to ensure it gets filtered out
+            
+        results.append(score_obj)
+
+    # Sort descending
+    results.sort(key=lambda x: x.score, reverse=True)
+    return results
+
+
 def _score_clarity(text: str, issue_number: int = 0) -> float:
     """
     Use Llama 3.1 8B on Groq to score issue clarity 0–100.
@@ -204,25 +452,43 @@ def _score_clarity(text: str, issue_number: int = 0) -> float:
         "Respond with only a number between 0 and 100."
     )
 
-    # Try Groq first
-    api_key = os.environ.get("GROQ_API_KEY")
-    if api_key:
-        try:
-            from groq import Groq
+    provider = get_model_provider("scoring_provider", "groq")
+    model = get_model_name("scoring_model", "llama-3.1-8b-instant")
 
-            client = Groq(api_key=api_key)
-            model = get_model_name("scoring_model", "llama-3.1-8b-instant")
-            response = client.chat.completions.create(
+    # Try Ollama first if configured
+    if provider == "ollama":
+        try:
+            from integrations.ollama_client import call_ollama
+            raw = call_ollama(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                prompt=prompt,
+                temperature=0.2,
                 max_tokens=5,
-                temperature=0.0,
-            )
-            raw = response.choices[0].message.content.strip()
+            ).strip()
             score = float("".join(c for c in raw if c.isdigit() or c == "."))
             return min(100.0, max(0.0, score))
         except Exception as exc:
-            log.warning("scorer.clarity_groq_failed", error=str(exc)[:100], fallback="gemini")
+            log.warning("scorer.clarity_ollama_failed", error=str(exc)[:100], fallback="groq/gemini")
+
+    # Try Groq (fallback or primary if configured)
+    if provider == "groq" or (provider != "ollama" and os.environ.get("GROQ_API_KEY")):
+        api_key = os.environ.get("GROQ_API_KEY")
+        if api_key:
+            try:
+                from groq import Groq
+
+                client = Groq(api_key=api_key)
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=5,
+                    temperature=0.0,
+                )
+                raw = response.choices[0].message.content.strip()
+                score = float("".join(c for c in raw if c.isdigit() or c == "."))
+                return min(100.0, max(0.0, score))
+            except Exception as exc:
+                log.warning("scorer.clarity_groq_failed", error=str(exc)[:100], fallback="gemini")
 
     # Fallback: try Gemini Flash
     gemini_key = os.environ.get("GEMINI_API_KEY")

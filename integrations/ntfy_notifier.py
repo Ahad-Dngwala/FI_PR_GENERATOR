@@ -171,6 +171,8 @@ def start_approval_server(port: int = 8080) -> None:
     Only starts one server per process (idempotent).
     """
     global _flask_thread
+    if _flask_thread is not None and not _flask_thread.is_alive():
+        _flask_thread = None
     if _flask_thread is not None and _flask_thread.is_alive():
         log.info("ntfy.server_already_running", port=port)
         return
@@ -311,6 +313,49 @@ def wait_for_approval(
     return None  # Timeout — never auto-approve
 
 
+_flask_server_started = False
+_flask_port = 8080
+
+
+def ensure_approval_server_running() -> int:
+    """
+    Start Flask server if not already running.
+    Tries configured port or scans range 8080-8090, verifying health.
+    Returns the port it is running on.
+    """
+    global _flask_server_started, _flask_port
+    if _flask_server_started:
+        # Check if actually responsive
+        try:
+            resp = requests.get(f"http://127.0.0.1:{_flask_port}/health", timeout=1.0)
+            if resp.status_code == 200:
+                return _flask_port
+        except Exception:
+            _flask_server_started = False
+
+    preferred_port = int(os.environ.get("APPROVAL_SERVER_PORT", "8080"))
+    ports = [preferred_port] + [p for p in range(8080, 8091) if p != preferred_port]
+
+    for port in ports:
+        log.info("ntfy.attempting_server_startup", port=port)
+        start_approval_server(port=port)
+        # Verify health (poll up to 5 times with short delay)
+        for attempt in range(5):
+            time.sleep(0.3)
+            try:
+                resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+                if resp.status_code == 200:
+                    _flask_port = port
+                    _flask_server_started = True
+                    log.info("ntfy.server_running_and_healthy", port=port)
+                    return port
+            except Exception:
+                continue
+        log.warning("ntfy.server_failed_health_check", port=port)
+
+    raise OSError("Could not start a healthy approval server on any port 8080-8090")
+
+
 def send_and_wait(
     req: ApprovalRequest,
     timeout_minutes: int = 60,
@@ -323,8 +368,7 @@ def send_and_wait(
     Convenience wrapper: ensure approval server is running, send notification,
     then block until human responds or timeout.
     """
-    port = int(os.environ.get("APPROVAL_SERVER_PORT", "8080"))
-    start_approval_server(port=port)
+    ensure_approval_server_running()
     sent = send_approval_request(req, ntfy_url=ntfy_url, topic=topic, server_url=server_url, token=token)
     if not sent:
         log.error("ntfy.notification_not_sent_blocking_anyway", run_id=req.run_id)

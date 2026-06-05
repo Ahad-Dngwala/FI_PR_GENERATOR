@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,11 @@ from typing import Optional
 
 import requests
 import structlog
+from github import Auth, Github
+
+# Global thread-safety lock for preventing duplicate runs on the same issue
+RUNNING_ISSUES: set[tuple[str, str, int]] = set()
+RUNNING_ISSUES_LOCK = threading.Lock()
 
 log = structlog.get_logger(__name__)
 
@@ -431,49 +437,21 @@ def listen_for_commands(
                     # Auto-register and whitelist/enable all targets of this run, disabling all others
                     register_active_repos(targets)
 
-                    # Run the pipeline sequentially for all targets
+                    # Run the pipeline in a background thread for each target
                     for org, repo in targets:
-                        try:
-                            from orchestrator import run_pipeline
-
-                            last_run_time = time.monotonic()
-                            run_timestamps.append(last_run_time)
-
-                            log.info(
-                                "command_listener.running_pipeline",
-                                org=org, repo=repo, dry_run=dry_run,
-                            )
-
-                            final_state = run_pipeline(
-                                org=org, repo=repo, dry_run=dry_run, issue_number=issue_number
-                            )
-
-                            # Send result summary
-                            status_icon = "✅" if final_state.state == "completed" else "⚠️"
-                            summary_lines = [
-                                f"{status_icon} Pipeline {final_state.state.upper()}: {org}/{repo}",
-                            ]
-                            if final_state.issue_number:
-                                summary_lines.append(f"Issue: #{final_state.issue_number}")
-                            if final_state.model_used:
-                                summary_lines.append(f"Model: {final_state.model_used}")
-                            if final_state.risk_score:
-                                summary_lines.append(
-                                    f"Risk: {final_state.risk_score.level} "
-                                    f"({final_state.risk_score.score:.0f}/100)"
-                                )
-                            if final_state.failure_reason:
-                                summary_lines.append(f"Reason: {final_state.failure_reason[:100]}")
-
-                            _send_status(command_topic, "\n".join(summary_lines), token)
-
-                        except Exception as exc:
-                            log.error("command_listener.pipeline_error", org=org, repo=repo, error=str(exc))
-                            _send_status(
-                                command_topic,
-                                f"❌ Pipeline crashed on {org}/{repo}: {str(exc)[:200]}",
-                                token,
-                            )
+                        last_run_time = time.monotonic()
+                        run_timestamps.append(last_run_time)
+                        
+                        log.info(
+                            "command_listener.triggering_pipeline",
+                            org=org, repo=repo, dry_run=dry_run, issue=issue_number
+                        )
+                        t = threading.Thread(
+                            target=_run_pipeline_safe,
+                            args=(org, repo, issue_number, dry_run, command_topic, token),
+                            daemon=True
+                        )
+                        t.start()
 
         except requests.ConnectionError:
             log.warning("command_listener.connection_lost", retry_seconds=30)
@@ -485,12 +463,162 @@ def listen_for_commands(
             log.error("command_listener.error", error=str(exc))
             time.sleep(30)
 
-        except requests.ConnectionError:
-            log.warning("command_listener.connection_lost", retry_seconds=30)
-            time.sleep(30)
-        except KeyboardInterrupt:
-            log.info("command_listener.stopped")
-            break
+
+def _run_pipeline_safe(
+    org: str,
+    repo: str,
+    issue_number: Optional[int],
+    dry_run: bool,
+    command_topic: str,
+    token: str,
+) -> None:
+    """Run the pipeline sequentially while holding a lock on the issue."""
+    key = (org.lower(), repo.lower(), issue_number or 0)
+    with RUNNING_ISSUES_LOCK:
+        if key in RUNNING_ISSUES:
+            log.info("command_listener.already_running_skipping", key=key)
+            return
+        RUNNING_ISSUES.add(key)
+
+    try:
+        from orchestrator import run_pipeline
+        log.info("command_listener.running_pipeline_safe", org=org, repo=repo, issue=issue_number, dry_run=dry_run)
+        
+        final_state = run_pipeline(
+            org=org, repo=repo, dry_run=dry_run, issue_number=issue_number
+        )
+
+        # Send result summary
+        status_icon = "✅" if final_state.state == "completed" else "⚠️"
+        summary_lines = [
+            f"{status_icon} Pipeline {final_state.state.upper()}: {org}/{repo}",
+        ]
+        if final_state.issue_number:
+            summary_lines.append(f"Issue: #{final_state.issue_number}")
+        if final_state.model_used:
+            summary_lines.append(f"Model: {final_state.model_used}")
+        if final_state.risk_score:
+            summary_lines.append(
+                f"Risk: {final_state.risk_score.level} "
+                f"({final_state.risk_score.score:.0f}/100)"
+            )
+        if final_state.failure_reason:
+            summary_lines.append(f"Reason: {final_state.failure_reason[:100]}")
+
+        _send_status(command_topic, "\n".join(summary_lines), token)
+
+    except Exception as exc:
+        log.error("command_listener.pipeline_safe_error", org=org, repo=repo, issue=issue_number, error=str(exc))
+        _send_status(
+            command_topic,
+            f"❌ Pipeline crashed on {org}/{repo} #{issue_number or 'any'}: {str(exc)[:200]}",
+            token,
+        )
+    finally:
+        with RUNNING_ISSUES_LOCK:
+            RUNNING_ISSUES.discard(key)
+
+
+def _poll_assignments(github_username: str, allow_live: bool, poll_interval_seconds: int = 300) -> None:
+    """
+    Background thread that polls GitHub search API every 5 minutes for newly assigned open issues.
+    Auto-triggers the pipeline when a new assignment is detected.
+    """
+    if not github_username:
+        log.warning("command_listener.poller_disabled", reason="GITHUB_USERNAME not set in .env")
+        return
+
+    command_topic = os.environ.get("NTFY_COMMAND_TOPIC", "")
+    token = os.environ.get("NTFY_TOKEN", "")
+    seen_assignments: set[str] = set()
+
+    log.info("command_listener.assignment_poller_starting", user=github_username, interval=poll_interval_seconds)
+
+    # Initial scan on startup to populate seen_assignments so we only trigger on NEW assignments
+    try:
+        g = Github(auth=Auth.Token(os.environ["GITHUB_TOKEN"]))
+        issues = g.search_issues(f"assignee:{github_username} is:open is:issue")
+        for issue in issues:
+            key = f"{issue.repository.full_name}#{issue.number}"
+            seen_assignments.add(key)
+        log.info("command_listener.poller_initial_scan", seen_count=len(seen_assignments))
+    except Exception as exc:
+        log.warning("command_listener.poller_initial_scan_failed", error=str(exc))
+
+    while True:
+        try:
+            time.sleep(poll_interval_seconds)
+            
+            # Reload env variables in each cycle to pick up updates (keys, overrides, etc.)
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            
+            token = os.environ.get("NTFY_TOKEN", "")
+            command_topic = os.environ.get("NTFY_COMMAND_TOPIC", "")
+            
+            g = Github(auth=Auth.Token(os.environ["GITHUB_TOKEN"]))
+            issues = g.search_issues(f"assignee:{github_username} is:open is:issue")
+            
+            for issue in issues:
+                key = f"{issue.repository.full_name}#{issue.number}"
+                if key in seen_assignments:
+                    continue
+                
+                # New assignment detected!
+                seen_assignments.add(key)
+                repo_full = issue.repository.full_name
+                org, repo = repo_full.split("/", 1)
+                
+                # Check org whitelist (unless disabled)
+                allowed_orgs = _load_allowed_orgs()
+                disable_whitelist = os.environ.get("DISABLE_ORG_WHITELIST", "").lower() == "true"
+                if not disable_whitelist and allowed_orgs and org not in allowed_orgs:
+                    log.warning("command_listener.poller_org_rejected", org=org, allowed=allowed_orgs)
+                    continue
+
+                log.info("command_listener.poller_triggering", issue=key)
+                _send_status(
+                    command_topic,
+                    f"🚀 Auto-trigger assignment detected: {org}/{repo} #{issue.number}\n"
+                    f"Starting pipeline automatically...",
+                    token
+                )
+                
+                t = threading.Thread(
+                    target=_run_pipeline_safe,
+                    args=(org, repo, issue.number, allow_live, command_topic, token),
+                    daemon=True
+                )
+                t.start()
+                
         except Exception as exc:
-            log.error("command_listener.error", error=str(exc))
-            time.sleep(30)
+            log.warning("command_listener.poller_error", error=str(exc)[:100])
+
+
+def start_command_listener(allow_live: bool = False) -> None:
+    """
+    Start the full autonomous operation:
+    1. Start Flask approval server persistently
+    2. Start assignment poller in background thread
+    3. Listen for incoming ntfy command topic messages (blocking)
+    """
+    from integrations.ntfy_notifier import ensure_approval_server_running
+    
+    # Start Flask persistently
+    port = ensure_approval_server_running()
+    log.info("command_listener.flask_server_active", port=port)
+
+    # Start assignment poller thread
+    github_username = os.environ.get("GITHUB_USERNAME", "")
+    poll_interval = int(os.environ.get("ASSIGNMENT_POLL_INTERVAL", "300"))
+    
+    t = threading.Thread(
+        target=_poll_assignments,
+        args=(github_username, allow_live, poll_interval),
+        daemon=True
+    )
+    t.start()
+    log.info("command_listener.assignment_poller_started", poll_interval=poll_interval)
+
+    # Blocking SSE listener loop
+    listen_for_commands(allow_live=allow_live)

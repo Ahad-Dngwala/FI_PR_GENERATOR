@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 import structlog
 
 from integrations import github_client
-from memory.config_loader import get_model_name
+from memory.config_loader import get_model_name, get_model_provider
 from memory.org_memory import load_org_memory, save_org_memory
 from memory.schemas import ActivityScore, OrgMemory, RejectionEntry, WorkflowRules
 
@@ -224,8 +224,29 @@ Extract and return as JSON with exactly these keys:
 
 Respond with valid JSON only."""
 
+    provider = get_model_provider("memory_provider", "google")
     model = get_model_name("memory_model", "gemini-2.0-flash")
-    result = _gemini_json_call(prompt, model=model)
+
+    result = None
+    # Try Ollama first if configured
+    if provider == "ollama":
+        try:
+            from integrations.ollama_client import call_ollama
+            raw = call_ollama(
+                model=model,
+                prompt=prompt,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            result = json.loads(raw)
+        except Exception as exc:
+            log.warning("memory_builder.conventions_ollama_failed", error=str(exc)[:100], fallback="gemini/groq")
+
+    # Try original fallbacks
+    if not result:
+        if provider == "google" or provider == "gemini" or (provider != "ollama" and os.environ.get("GEMINI_API_KEY")):
+            result = _gemini_json_call(prompt, model=model if provider in ["google", "gemini"] else "gemini-2.0-flash")
+
     if not result:
         # Try Groq fallback
         fallback_model = get_model_name("workflow_detector_model", "llama-3.3-70b-versatile")
@@ -331,8 +352,29 @@ Return ONLY valid JSON with this structure:
 Use null for fields where you have no evidence. Be honest about confidence.
 Respond with JSON only."""
 
+    provider = get_model_provider("workflow_detector_provider", "groq")
     detector_model = get_model_name("workflow_detector_model", "llama-3.3-70b-versatile")
-    data = _groq_json_call(prompt, model=detector_model)
+
+    data = None
+    # Try Ollama first if configured
+    if provider == "ollama":
+        try:
+            from integrations.ollama_client import call_ollama
+            raw = call_ollama(
+                model=detector_model,
+                prompt=prompt,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(raw)
+        except Exception as exc:
+            log.warning("memory_builder.workflow_ollama_failed", error=str(exc)[:100], fallback="groq/gemini")
+
+    # Try original fallbacks
+    if not data:
+        if provider == "groq" or (provider != "ollama" and os.environ.get("GROQ_API_KEY")):
+            data = _groq_json_call(prompt, model=detector_model if provider == "groq" else "llama-3.3-70b-versatile")
+
     if not data:
         # Fallback to Gemini
         fallback_model = get_model_name("memory_model", "gemini-2.0-flash")

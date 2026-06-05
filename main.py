@@ -152,7 +152,7 @@ def scan_orgs(org: str, repo: str, min_score: float) -> None:
     Label bonus is added to score but issues without labels are still shown.
     No GitHub writes. No coding. Safe to run at any time.
     """
-    from agents.scorer import compute_activity_score, compute_issue_score
+    from agents.scorer import compute_activity_score, compute_issue_score, score_issues_batch
     from integrations.github_client import get_open_issues, get_repo_activity
     from memory.org_memory import load_org_memory
     from memory.schemas import ActivityScore, OrgMemory
@@ -216,11 +216,11 @@ def scan_orgs(org: str, repo: str, min_score: float) -> None:
                     continue
 
                 click.echo(f"   Scanning {len(issues)} open issues (all labels, no filter)...")
-                scored = [
-                    (issue, compute_issue_score(issue, memory, activity))
-                    for issue in issues
-                ]
-                scored.sort(key=lambda x: x[1].score, reverse=True)
+                scored_list = score_issues_batch(issues, memory, activity)
+                scored = []
+                for s_obj in scored_list:
+                    matched_issue = next(i for i in issues if i["number"] == s_obj.issue_number)
+                    scored.append((matched_issue, s_obj))
 
                 displayed = 0
                 for issue, score in scored:
@@ -415,22 +415,24 @@ def listen(live: bool) -> None:
 
     Requires NTFY_COMMAND_TOPIC to be set in .env.
     """
-    from integrations.command_listener import listen_for_commands
+    from integrations.command_listener import start_command_listener
 
     mode = "LIVE + DRY-RUN" if live else "DRY-RUN ONLY"
-    click.echo(f"📱 Starting command listener [{mode}]")
+    click.echo(f"📱 Starting autonomous command listener [{mode}]")
     click.echo(f"   Command topic: {os.environ.get('NTFY_COMMAND_TOPIC', '(not set)')}")
     click.echo(f"   Approval topic: {os.environ.get('NTFY_TOPIC', '(not set)')}")
-    click.echo("   Send 'org/repo' from ntfy app to trigger a pipeline run.")
+    click.echo(f"   GitHub user: {os.environ.get('GITHUB_USERNAME', '(not set)')}")
+    click.echo(f"   Assignment polling: every {os.environ.get('ASSIGNMENT_POLL_INTERVAL', '300')} seconds")
+    click.echo("   Send 'org/repo' from ntfy app or assign issues to trigger pipeline runs.")
     click.echo("   Press Ctrl+C to stop.\n")
 
     try:
-        listen_for_commands(allow_live=live)
+        start_command_listener(allow_live=live)
     except EnvironmentError as exc:
         click.echo(f"\n❌ {exc}", err=True)
         raise SystemExit(1)
     except KeyboardInterrupt:
-        click.echo("\n⏹️  Command listener stopped.")
+        click.echo("\n⏹️  Autonomous command listener stopped.")
 
 
 # ---------------------------------------------------------------------------

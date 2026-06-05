@@ -18,6 +18,9 @@ from agents.scorer import (
     compute_risk_score,
     _score_label_bonus,
     _score_scope,
+    _quick_filter,
+    _parse_batch_json,
+    score_issues_batch,
 )
 from memory.schemas import ActivityScore, OrgMemory, WorkflowRules
 
@@ -203,3 +206,131 @@ class TestRiskScore:
         diff = "\n".join(["+" + "x"] * 500)
         result = compute_risk_score(diff, ["src/main.py"], False, True, True)
         assert 0 <= result.score <= 100
+
+
+class TestBatchScoring:
+    def test_quick_filter_valid_issue(self):
+        # Good, active, unassigned issue should pass
+        issue = {
+            "number": 101,
+            "title": "Fix alignment of submit button",
+            "body": "The submit button is shifted left on mobile viewport screens.",
+            "assignee": None,
+            "locked": False,
+            "pull_request": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "labels": ["bug", "frontend"],
+        }
+        passed, reason = _quick_filter(issue)
+        assert passed is True
+        assert reason == "pass"
+
+    def test_quick_filter_assigned_issue(self):
+        # Assigned issues should be dropped
+        issue = {
+            "number": 102,
+            "title": "Fix button",
+            "body": "Detailed description of button issue that is longer than 30 chars",
+            "assignee": "Ahad-Dngwala",
+            "locked": False,
+            "pull_request": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "labels": [],
+        }
+        passed, reason = _quick_filter(issue)
+        assert passed is False
+        assert reason == "assigned"
+
+    def test_quick_filter_stale_issue(self):
+        # Stale issues (>60 days old) should be dropped
+        from datetime import timedelta
+        stale_date = datetime.now(timezone.utc) - timedelta(days=65)
+        issue = {
+            "number": 103,
+            "title": "Stale bug",
+            "body": "Detailed description of button issue that is longer than 30 chars",
+            "assignee": None,
+            "locked": False,
+            "pull_request": None,
+            "created_at": stale_date.isoformat(),
+            "labels": [],
+        }
+        passed, reason = _quick_filter(issue)
+        assert passed is False
+        assert reason == "stale"
+
+    def test_quick_filter_bad_labels(self):
+        # Issues with bad labels (wontfix, duplicate, etc.) should be dropped
+        issue = {
+            "number": 104,
+            "title": "Duplicate issue",
+            "body": "Detailed description of button issue that is longer than 30 chars",
+            "assignee": None,
+            "locked": False,
+            "pull_request": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "labels": ["duplicate"],
+        }
+        passed, reason = _quick_filter(issue)
+        assert passed is False
+        assert reason == "bad_label"
+
+    def test_parse_batch_json_standard(self):
+        # Regular JSON should be parsed correctly
+        raw = '{"101": 85.0, "102": 45.0}'
+        parsed = _parse_batch_json(raw)
+        assert parsed == {101: 85.0, 102: 45.0}
+
+    def test_parse_batch_json_with_markdown(self):
+        # Markdown JSON block should be parsed correctly
+        raw = 'Here is the score:\n```json\n{"101": 85.0, "102": 45.0}\n```\nHope it helps!'
+        parsed = _parse_batch_json(raw)
+        assert parsed == {101: 85.0, 102: 45.0}
+
+    def test_parse_batch_json_malformed_repair(self):
+        # Malformed JSON (no braces, missing quotes, commas) should be repaired via regex fallback
+        raw = '"101": 85.0\n"102": 45.0\n103: 90'
+        parsed = _parse_batch_json(raw)
+        assert parsed == {101: 85.0, 102: 45.0, 103: 90.0}
+
+    @patch("agents.scorer._score_clarity_batch")
+    def test_score_issues_batch(self, mock_batch_clarity, minimal_org_memory):
+        # Setup mock batch clarity to return scores for the candidates
+        mock_batch_clarity.return_value = {101: 90.0}
+
+        issues = [
+            {
+                "number": 101,
+                "title": "Fix alignment",
+                "body": "The submit button is shifted left on mobile viewport screens.",
+                "assignee": None,
+                "locked": False,
+                "pull_request": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "labels": ["bug"],
+            },
+            {
+                "number": 102,
+                "title": "Assigned issue",
+                "body": "This issue is already assigned and should be skipped by pre-filter.",
+                "assignee": "someone_else",
+                "locked": False,
+                "pull_request": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "labels": [],
+            }
+        ]
+
+        scored = score_issues_batch(issues, minimal_org_memory, minimal_org_memory.activity)
+        assert len(scored) == 2
+        
+        # Candidate should have high score
+        candidate_score = next(s for s in scored if s.issue_number == 101)
+        assert candidate_score.score >= 60.0
+        assert candidate_score.decision == "proceed"
+
+        # Skipped issue should have score of 0.0 and decision reject
+        skipped_score = next(s for s in scored if s.issue_number == 102)
+        assert skipped_score.score == 0.0
+        assert skipped_score.decision == "reject"
+        assert "Heuristic filter" in skipped_score.rejection_reason

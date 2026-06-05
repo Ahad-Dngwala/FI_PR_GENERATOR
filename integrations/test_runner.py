@@ -12,7 +12,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Optional
-from memory.config_loader import get_model_name
+from memory.config_loader import get_model_name, get_model_provider
 
 import structlog
 
@@ -209,40 +209,60 @@ def _classify_with_llm(output: str) -> str:
     Send truncated test output to Llama 3.1 8B on Groq for classification.
     Returns one of the known outcome strings.
     """
+    provider = get_model_provider("classifier_provider", "groq")
+    model = get_model_name("classifier_model", "llama-3.1-8b-instant")
+    truncated = output[-1500:]  # last 1500 chars
+
+    # Only check GROQ_API_KEY if we are actually using Groq
     api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
+    if provider == "groq" and not api_key:
         log.warning("test_runner.no_groq_key_for_classifier", fallback="CODE_BUG")
         return "CODE_BUG"
 
-    try:
-        from groq import Groq
+    prompt = (
+        "Classify this test failure output as exactly one of:\n"
+        "CODE_BUG, ENV_ISSUE, FLAKY, PREEXISTING, UNRELATED\n\n"
+        "Definitions:\n"
+        "CODE_BUG = the patch introduced a bug (assertion, type, syntax error)\n"
+        "ENV_ISSUE = missing env var, missing dependency, service not running\n"
+        "FLAKY = likely intermittent, non-deterministic failure\n"
+        "PREEXISTING = failure unrelated to the changes (was failing before)\n"
+        "UNRELATED = test file unrelated to changed files\n\n"
+        f"Test output:\n{truncated}\n\n"
+        "Respond with ONLY the class name. No explanation."
+    )
 
-        client = Groq(api_key=api_key)
-        truncated = output[-1500:]  # last 1500 chars
-        model = get_model_name("classifier_model", "llama-3.1-8b-instant")
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Classify this test failure output as exactly one of:\n"
-                        "CODE_BUG, ENV_ISSUE, FLAKY, PREEXISTING, UNRELATED\n\n"
-                        "Definitions:\n"
-                        "CODE_BUG = the patch introduced a bug (assertion, type, syntax error)\n"
-                        "ENV_ISSUE = missing env var, missing dependency, service not running\n"
-                        "FLAKY = likely intermittent, non-deterministic failure\n"
-                        "PREEXISTING = failure unrelated to the changes (was failing before)\n"
-                        "UNRELATED = test file unrelated to changed files\n\n"
-                        f"Test output:\n{truncated}\n\n"
-                        "Respond with ONLY the class name. No explanation."
-                    ),
-                }
-            ],
-            max_tokens=10,
-            temperature=0.0,
-        )
-        result = response.choices[0].message.content.strip().upper()
+    try:
+        result = None
+        # Try Ollama classification if configured
+        if provider == "ollama":
+            try:
+                from integrations.ollama_client import call_ollama
+                result = call_ollama(
+                    model=model,
+                    prompt=prompt,
+                    temperature=0.0,
+                    max_tokens=10,
+                ).strip().upper()
+                if result in OUTCOMES:
+                    log.info("test_runner.classified_ollama", category=result)
+                    return result
+            except Exception as exc:
+                log.warning("test_runner.classifier_ollama_failed", error=str(exc)[:100], fallback="groq")
+
+        # Try Groq classification (fallback or primary)
+        if not result:
+            if provider == "groq" or (provider != "ollama" and api_key):
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                response = client.chat.completions.create(
+                    model=model if provider == "groq" else "llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=10,
+                    temperature=0.0,
+                )
+                result = response.choices[0].message.content.strip().upper()
+
         if result in OUTCOMES:
             log.info("test_runner.classified_llm", category=result)
             return result

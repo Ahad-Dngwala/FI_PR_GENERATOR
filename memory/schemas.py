@@ -198,6 +198,9 @@ class RunState(BaseModel):
     retry_count: int = 0
     model_used: Optional[str] = None
     failure_reason: Optional[str] = None
+    last_claim_attempt: Optional[datetime] = None
+    claim_attempt_count: int = 0
+    claim_cooldown_seconds: int = 300
     created_at: datetime
     updated_at: datetime
 

@@ -180,6 +180,12 @@ python -m pytest tests/test_scorer.py tests/test_ntfy.py -v
 # Run LLM smoke tests (needs API keys in .env)
 python -m pytest tests/test_llm_endpoints.py -v -s
 
+# Run only local Ollama endpoint smoke tests
+python -m pytest tests/test_llm_endpoints.py -k "ollama" -v -s
+
+# Run new workflow action engine unit tests
+python -m pytest tests/test_workflow_engine.py -v
+
 # Run ntfy unit tests only (no API keys needed)
 python -m pytest tests/test_ntfy.py -v -s
 
@@ -199,14 +205,15 @@ python -m pytest tests/test_llm_endpoints.py::TestGroqEndpoints::test_llama_8b_i
 python -m pytest tests/ -v -s --tb=long
 
 # Skip slow/live tests (only run offline unit tests)
-python -m pytest tests/ -v -k "not TestNtfyNotification and not TestGroqEndpoints and not TestGemini and not TestOpenRouter and not TestAnthropic and not TestGitHub"
+python -m pytest tests/ -v -k "not TestNtfyNotification and not TestGroqEndpoints and not TestGemini and not TestOpenRouter and not TestAnthropic and not TestGitHub and not TestOllamaEndpoints"
 ```
 
 **Test categories:**
 ```
-test_scorer.py           — 15 offline unit tests (scoring formulas)
+test_scorer.py           — 23 offline unit tests (scoring formulas + batch scoring)
+test_workflow_engine.py  — 5 offline unit tests (adaptive capability routing engine)
 test_ntfy.py             — Flask server + file I/O (offline) + real send (needs NTFY_TOPIC)
-test_llm_endpoints.py    — Live API smoke tests (auto-skipped if key not set)
+test_llm_endpoints.py    — Live API & Local Ollama smoke tests (auto-skipped if key/local port not active)
 ```
 
 ---

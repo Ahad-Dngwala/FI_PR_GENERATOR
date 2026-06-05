@@ -882,18 +882,18 @@ To test the system safely without making unexpected commits or PRs:
       "provider": "anthropic"
     }
   ],
-  "review_model": "llama-3.3-70b-versatile",
-  "review_provider": "groq",
-  "scoring_model": "llama-3.1-8b-instant",
-  "scoring_provider": "groq",
-  "planning_model": "llama-3.3-70b-versatile",
-  "planning_provider": "groq",
-  "memory_model": "gemini-2.5-flash",
-  "memory_provider": "google",
-  "classifier_model": "llama-3.1-8b-instant",
-  "classifier_provider": "groq",
-  "workflow_detector_model": "llama-3.3-70b-versatile",
-  "workflow_detector_provider": "groq",
+  "review_model": "gemma4:12b",
+  "review_provider": "ollama",
+  "scoring_model": "qwen2.5:7b",
+  "scoring_provider": "ollama",
+  "planning_model": "qwen2.5:7b",
+  "planning_provider": "ollama",
+  "memory_model": "qwen2.5:7b",
+  "memory_provider": "ollama",
+  "classifier_model": "qwen2.5:7b",
+  "classifier_provider": "ollama",
+  "workflow_detector_model": "qwen2.5:7b",
+  "workflow_detector_provider": "ollama",
   "budget": {
     "max_gemini_requests_per_day": 50,
     "max_groq_requests_per_day": 400,
@@ -1008,16 +1008,47 @@ If above 40%: system is working — scale up carefully
 
 ### 📅 Development Roadmap
 
-#### Phase 1 — MVP (Weeks 1–3) [COMPLETED]
-* Scorer engine (`scorer.py`), GitHub client (`github_client.py`), Aider engine (`aider_runner.py`), and notification approval gate (`ntfy_notifier.py`).
-* Full end-to-end pipeline run with dry-run support.
+#### Phase 1: Weighted Scorer Engine [COMPLETED]
+- Implemented multi-signal repository activity scoring and weighted issue scoring (clarity, scope, similarity, testability).
 
-#### Phase 2 — Stability (Weeks 4–6) [IN PROGRESS]
-* Org memory caching & build utilities (`memory_builder.py`).
-* Robust state persistence, auto-restarts, fallback models, and validation error classifiers.
+#### Phase 2: Local Test Validation & Failure Classifier [COMPLETED]
+- Built automated test detection and running under subprocesses. Created heuristic and LLM classifiers for failing tests.
 
-#### Phase 3 — Production (Weeks 7–10)
-* Local vector stores, pre-flight environment validators, and dashboard UI.
+#### Phase 3: Context Retrieval [COMPLETED]
+- Wired Aider repository-mapping, ripgrep keyword searches, and context verifiers to feed accurate codebase structure to models.
+
+#### Phase 4: Coder Agent [COMPLETED]
+- Built the search-and-replace unified diff patch generator utilizing a robust model fallback chain (Gemini 2.5 Pro primary, Qwen/DeepSeek/Claude backups).
+
+#### Phase 5: Code Reviewer [COMPLETED]
+- Integrated Qwen 2.5 Coder 32B reviewer on Groq to critique patches for critical and minor issues before approval.
+
+#### Phase 6: Push Approval Notification Gate [COMPLETED]
+- Created the ntfy.sh JSON payload channel and Flask local callback webhook receiver, letting users approve or reject PR pushes directly from mobile.
+
+#### Phase 7: Restart Recovery & Run States [COMPLETED]
+- Created serializable RunState JSON logging to disk, enabling full recovery from crashes or shutdowns. Created `list-states` and `test-notification` CLI.
+
+#### Phase 8: Subprocess Hardening & Command Listener [COMPLETED]
+- Implemented interactive prompt bypasses in Aider (`--yes-always`), fixed Windows encoding issues, and created `main.py listen` commands to poll for triggers.
+
+#### Phase 9: Model Upgrades & Dotenv Hardening [COMPLETED]
+- Upgraded Groq planning and review models to `llama-3.3-70b-versatile`, and configured absolute dotenv override settings.
+
+#### Phase 10: Whitelist Bypass & CLI QoL [COMPLETED]
+- Added `DISABLE_ORG_WHITELIST=true` to skip organization config locks, and updated `scan-orgs` to accept direct `--org` and `--repo` CLI arguments.
+
+#### Phase 11: absolute Dotenv Path Resolution in Tests [COMPLETED]
+- Solved test runner credential loading bugs by forcing relative-to-file absolute path searches for `.env` files.
+
+#### Phase 12: Dynamic Env Reloading & Rate Limits [COMPLETED]
+- Wired automatic env reload triggers upon receiving commands, and tweaked command rate limits for developers.
+
+#### Phase 13: Fork PR Workflow, Autonomous poller, & Batch Scoring [COMPLETED]
+- Implemented automatic fork creation, remote git operations, cross-repository draft PR generation, background thread poller, and batch clarity scoring.
+
+#### Phase 14: Local LLM Orchestration & Adaptive Workflow Engine [COMPLETED]
+- Configured local model role-splitting (`qwen2.5:7b` for fast tasks, `gemma4:12b` for reviews). Built a serialized queue worker (`local_queue.py`), persistent SHA256 prompt-response caching, and capability-based dynamic workflow actions routing.
 
 ---
 

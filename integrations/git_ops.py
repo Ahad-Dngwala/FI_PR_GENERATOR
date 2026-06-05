@@ -257,3 +257,183 @@ def create_draft_pr(
     except subprocess.TimeoutExpired:
         log.error("git.draft_pr_timeout", branch=branch)
         return None
+
+
+def clone_fork_or_upstream(
+    org: str,
+    repo: str,
+    fork_owner: str,
+    fork_repo: str,
+    local_path: str,
+    use_fork: bool = True,
+) -> Optional[Repo]:
+    """
+    Clone a repository, pointing origin to the fork (if use_fork is True) or upstream.
+    Sets up 'upstream' remote pointing to the real upstream repository.
+    """
+    path = Path(local_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fork_url = f"https://github.com/{fork_owner}/{fork_repo}.git"
+    upstream_url = f"https://github.com/{org}/{repo}.git"
+    target_url = fork_url if use_fork else upstream_url
+
+    try:
+        if (path / ".git").exists():
+            log.info("git.pulling_existing_multi_remote", path=str(path), use_fork=use_fork)
+            git_repo = Repo(str(path))
+            
+            # Update origin remote URL to point to fork or upstream
+            try:
+                git_repo.remote("origin").set_url(target_url)
+            except Exception:
+                git_repo.create_remote("origin", target_url)
+
+            # Ensure upstream remote exists
+            try:
+                git_repo.remote("upstream")
+            except Exception:
+                git_repo.create_remote("upstream", upstream_url)
+
+            # Fetch latest from both
+            git_repo.remote("origin").fetch()
+            git_repo.remote("upstream").fetch()
+
+            # Switch to default branch first so origin.pull() doesn't fail on custom local branch
+            default = get_default_branch(git_repo)
+            git_repo.git.checkout(default)
+            
+            # Pull from origin (which points to the fork or upstream)
+            git_repo.remotes.origin.pull()
+            log.info("git.multi_remote_pull_done", path=str(path))
+            return git_repo
+        else:
+            log.info("git.cloning_multi_remote", url=target_url, path=str(path), use_fork=use_fork)
+            git_repo = Repo.clone_from(target_url, str(path))
+            
+            # Add upstream remote
+            git_repo.create_remote("upstream", upstream_url)
+            git_repo.remote("upstream").fetch()
+            log.info("git.multi_remote_clone_done", path=str(path))
+            return git_repo
+
+    except (GitCommandError, InvalidGitRepositoryError) as exc:
+        log.error("git.multi_remote_clone_or_pull_failed", url=target_url, path=str(path), error=str(exc))
+        return None
+
+
+def rebase_fork_from_upstream(repo: Repo) -> bool:
+    """
+    Fetch latest from upstream and rebase the current branch onto upstream's default branch.
+
+    Does NOT auto-resolve conflicts — returns False if conflicts exist.
+    """
+    try:
+        repo.remote("upstream").fetch()
+        # Find default branch on upstream (e.g. main or master)
+        upstream_default = "main"
+        # We can detect it from upstream refs or remote HEAD
+        try:
+            refs = repo.remote("upstream").refs
+            for candidate in ["main", "master", "develop"]:
+                if hasattr(refs, candidate):
+                    upstream_default = candidate
+                    break
+        except Exception:
+            pass
+
+        repo.git.rebase(f"upstream/{upstream_default}")
+        log.info("git.fork_rebase_done", onto=f"upstream/{upstream_default}")
+        return True
+    except GitCommandError as exc:
+        error_msg = str(exc)
+        log.warning("git.fork_rebase_conflict", error=error_msg)
+        # Abort the rebase so the repo is left in a clean state
+        try:
+            repo.git.rebase("--abort")
+            log.info("git.fork_rebase_aborted")
+        except GitCommandError:
+            pass
+        return False
+
+
+def push_to_fork(repo: Repo, branch: str) -> bool:
+    """
+    Force-push the branch to origin (which points to the fork).
+    Uses --force-with-lease for safety.
+    """
+    try:
+        repo.git.push("origin", branch, "--force-with-lease", "--set-upstream")
+        log.info("git.pushed_to_fork", branch=branch)
+        return True
+    except GitCommandError as exc:
+        log.error("git.push_to_fork_failed", branch=branch, error=str(exc))
+        return False
+
+
+def create_cross_repo_draft_pr(
+    upstream_org: str,
+    upstream_repo: str,
+    fork_owner: str,
+    branch: str,
+    title: str,
+    body: str,
+    issue_number: int,
+) -> Optional[str]:
+    """
+    Create a draft PR from fork_owner:branch to upstream_org/upstream_repo.
+    """
+    upstream = f"{upstream_org}/{upstream_repo}"
+    head = f"{fork_owner}:{branch}"
+    try:
+        # Try base='main' first
+        result = subprocess.run(
+            [
+                "gh", "pr", "create",
+                "--repo", upstream,
+                "--head", head,
+                "--base", "main",
+                "--draft",
+                "--title", title,
+                "--body", body,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            pr_url = result.stdout.strip()
+            log.info("git.cross_repo_pr_created", url=pr_url, head=head, base="main")
+            return pr_url
+        
+        # If 'main' fails, check if 'master' is the default branch and try that
+        if "main" in result.stderr.lower() or "base" in result.stderr.lower() or result.returncode != 0:
+            log.warning("git.cross_repo_pr_main_failed_trying_master", stderr=result.stderr)
+            result2 = subprocess.run(
+                [
+                    "gh", "pr", "create",
+                    "--repo", upstream,
+                    "--head", head,
+                    "--base", "master",
+                    "--draft",
+                    "--title", title,
+                    "--body", body,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result2.returncode == 0:
+                pr_url = result2.stdout.strip()
+                log.info("git.cross_repo_pr_created", url=pr_url, head=head, base="master")
+                return pr_url
+            
+            log.error("git.cross_repo_pr_failed", stderr=result2.stderr, head=head)
+            return None
+        return None
+    except FileNotFoundError:
+        log.error("git.gh_cli_not_found", hint="Install gh CLI: https://cli.github.com")
+        return None
+    except subprocess.TimeoutExpired:
+        log.error("git.cross_repo_pr_timeout", head=head)
+        return None

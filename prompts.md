@@ -313,12 +313,12 @@ approved = true even if there are minor issues (human will see them)
 
 | # | Prompt | LLM | Provider | Called By | Output |
 |---|--------|-----|----------|-----------|--------|
-| 1 | Issue Clarity | Configurable (Default: `llama-3.1-8b-instant`) | Groq | scorer.py | Number 0-100 |
-| 2 | Test Classification | Configurable (Default: `llama-3.1-8b-instant`) | Groq | test_runner.py | One class name |
-| 3 | Conventions Extraction | Configurable (Default: `gemini-2.5-flash`) | Google AI | memory_builder.py | JSON dict |
-| 4 | Workflow Detection | Configurable (Default: `llama-3.3-70b-versatile`) | Groq | memory_builder.py | JSON WorkflowRules |
-| 5 | Code Generation | Configurable (`coding_chain` fallback list) | Multiple | coder.py | Unified diff |
-| 6 | Code Review | Configurable (Default: `llama-3.3-70b-versatile`) | Groq | reviewer.py | JSON verdict |
+| 1 | Issue Clarity | Configurable (Default: `qwen2.5:7b` or `llama-3.1-8b-instant`) | Ollama / Groq | scorer.py | Number 0-100 |
+| 2 | Test Classification | Configurable (Default: `qwen2.5:7b` or `llama-3.1-8b-instant`) | Ollama / Groq | test_runner.py | One class name |
+| 3 | Conventions Extraction | Configurable (Default: `qwen2.5:7b` or `gemini-2.5-flash`) | Ollama / Google AI | memory_builder.py | JSON dict |
+| 4 | Workflow Detection | Configurable (Default: `qwen2.5:7b` or `llama-3.3-70b-versatile`) | Ollama / Groq | memory_builder.py | JSON WorkflowRules |
+| 5 | Code Generation | Configurable (`coding_chain` fallback list) | Multiple (Cloud) | coder.py | Unified diff |
+| 6 | Code Review | Configurable (Default: `gemma4:12b` or `llama-3.3-70b-versatile`) | Ollama / Groq | reviewer.py | JSON verdict |
 
 ## Debugging Checklist
 

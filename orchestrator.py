@@ -17,7 +17,7 @@ from typing import Optional
 
 import structlog
 
-from memory.schemas import RejectionEntry, RunState
+from memory.schemas import RejectionEntry, RunState, WorkflowRules
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +80,48 @@ def _transition(state: RunState, new_state: str, **updates) -> RunState:
 # ---------------------------------------------------------------------------
 
 
+def determine_next_workflow_action(
+    workflow_rules: WorkflowRules,
+    issue_number: int,
+    github_username: str,
+) -> str:
+    """
+    Decide what workflow assignment action should be taken based on
+    dynamically extracted capabilities.
+    """
+    # 1. Check if assignment is actually required
+    # False indicates direct contribution is allowed or assignment is optional
+    if workflow_rules.direct_pr_allowed is True:
+        log.info("workflow_engine.action", action="SKIP_ASSIGNMENT", reason="direct PR allowed")
+        return "SKIP_ASSIGNMENT"
+    
+    if workflow_rules.assignment_required is False:
+        log.info("workflow_engine.action", action="SKIP_ASSIGNMENT", reason="assignment not required")
+        return "SKIP_ASSIGNMENT"
+
+    # 2. Check if a self-assign command / claim command is supported
+    if (workflow_rules.self_assign_allowed is True or workflow_rules.claim_bot_present is True) and workflow_rules.claim_command:
+        log.info(
+            "workflow_engine.action",
+            action="AUTO_CLAIM",
+            command=workflow_rules.claim_command,
+            reason="self assign/claim command supported"
+        )
+        return "AUTO_CLAIM"
+
+    # 3. Check if human proposal/discussion is requested first
+    if workflow_rules.proposal_required is True:
+        log.info("workflow_engine.action", action="REQUEST_DISCUSSION", reason="proposal/discussion required first")
+        return "REQUEST_DISCUSSION"
+
+    # 4. Standard fallback to wait for manual assignment
+    if workflow_rules.assignment_required is True:
+        log.info("workflow_engine.action", action="WAIT_FOR_ASSIGNMENT", reason="assignment required, no claim command found")
+        return "WAIT_FOR_ASSIGNMENT"
+
+    return "CONTINUE_PIPELINE"
+
+
 def run_pipeline(
     org: str,
     repo: str,
@@ -106,6 +148,9 @@ def run_pipeline(
         get_open_issues,
         get_repo_activity,
         post_comment,
+        is_collaborator,
+        get_or_create_fork,
+        sync_fork_with_upstream,
     )
     from memory.org_memory import load_or_build_org_memory
 
@@ -180,7 +225,7 @@ def run_pipeline(
         if not raw_issues:
             return _transition(state, "blocked", failure_reason="No open unassigned issues found")
 
-        scored_issues = [scorer.compute_issue_score(i, memory, activity) for i in raw_issues]
+        scored_issues = scorer.score_issues_batch(raw_issues, memory, activity)
         eligible = [s for s in scored_issues if s.score >= 60]
 
         if not eligible:
@@ -209,29 +254,130 @@ def run_pipeline(
     issue_body = issue.get("body") or ""
 
     # -----------------------------------------------------------------------
-    # STEP 3: ASSIGNMENT CHECK
+    # STEP 3: ASSIGNMENT CHECK & ADAPTIVE WORKFLOW ROUTING
     # -----------------------------------------------------------------------
+    # Old logic (commented out):
+    # if GITHUB_USERNAME and not dry_run:
+    #     try:
+    #         assigned = check_assignment(org, repo, issue["number"], GITHUB_USERNAME)
+    #         if not assigned:
+    #             # Post assignment request comment
+    #             wf = memory.workflow_rules
+    #             if wf.claim_bot_present and wf.claim_command:
+    #                 comment_body = wf.claim_command
+    #             else:
+    #                 comment_body = (
+    #                     f"Hi! I'd like to work on this issue. "
+    #                     f"Could I please be assigned? 🙏"
+    #                 )
+    #             post_comment(org, repo, issue["number"], comment_body)
+    #             return _transition(
+    #                 state, "blocked",
+    #                 failure_reason=f"Issue #{issue['number']} not yet assigned to {GITHUB_USERNAME} — comment posted",
+    #             )
+    #     except Exception as exc:
+    #         log.error("pipeline.step3_failed", error=str(exc))
+    #         return _transition(state, "failed", failure_reason=f"Step 3 error: {exc}")
+
     if GITHUB_USERNAME and not dry_run:
         try:
             assigned = check_assignment(org, repo, issue["number"], GITHUB_USERNAME)
             if not assigned:
-                # Post assignment request comment
                 wf = memory.workflow_rules
-                if wf.claim_bot_present and wf.claim_command:
-                    comment_body = wf.claim_command
-                else:
+                action = determine_next_workflow_action(wf, issue["number"], GITHUB_USERNAME)
+                
+                if action == "SKIP_ASSIGNMENT" or action == "CONTINUE_PIPELINE":
+                    log.info("pipeline.step3.skip_assignment", action=action)
+                elif action == "AUTO_CLAIM":
+                    # Check anti-spam safeguards
+                    if state.claim_attempt_count >= 3:
+                        log.warning("pipeline.step3.auto_claim_limit_reached", count=state.claim_attempt_count)
+                        return _transition(
+                            state, "blocked",
+                            failure_reason=f"Auto-claim failed after 3 attempts. Manual assignment required for issue #{issue['number']}.",
+                        )
+                        
+                    now = datetime.now(tz=timezone.utc)
+                    if state.last_claim_attempt:
+                        elapsed = (now - state.last_claim_attempt).total_seconds()
+                        if elapsed < state.claim_cooldown_seconds:
+                            cooldown_left = int(state.claim_cooldown_seconds - elapsed)
+                            log.warning("pipeline.step3.auto_claim_cooldown", seconds_left=cooldown_left)
+                            return _transition(
+                                state, "blocked",
+                                failure_reason=f"Auto-claim cooldown active. Try again in {cooldown_left} seconds.",
+                            )
+                    
+                    # Post claim comment
+                    comment_body = wf.claim_command or "/assign"
+                    log.info("pipeline.step3.post_claim_comment", command=comment_body, count=state.claim_attempt_count + 1)
+                    post_comment(org, repo, issue["number"], comment_body)
+                    
+                    # Update claim attempt state
+                    state.last_claim_attempt = now
+                    state.claim_attempt_count += 1
+                    _save_state(state)
+                    
+                    # Wait 15 seconds for the bot to process
+                    import time
+                    log.info("pipeline.step3.waiting_for_assignment_bot", seconds=15)
+                    time.sleep(15)
+                    
+                    # Re-verify assignment
+                    assigned_after = check_assignment(org, repo, issue["number"], GITHUB_USERNAME)
+                    if assigned_after:
+                        log.info("pipeline.step3.auto_assignment_successful")
+                    else:
+                        log.info("pipeline.step3.auto_assignment_pending")
+                        return _transition(
+                            state, "blocked",
+                            failure_reason=f"Claim command '{comment_body}' posted. Waiting for bot to assign issue #{issue['number']} to {GITHUB_USERNAME}.",
+                        )
+                elif action == "REQUEST_DISCUSSION":
+                    # Post discussion request
                     comment_body = (
-                        f"Hi! I'd like to work on this issue. "
-                        f"Could I please be assigned? 🙏"
+                        f"Hi! I'd like to work on this issue. I am preparing a proposal of my "
+                        f"approach to solve this problem. Can you assign this to me? Thanks!"
                     )
-                post_comment(org, repo, issue["number"], comment_body)
-                return _transition(
-                    state, "blocked",
-                    failure_reason=f"Issue #{issue['number']} not yet assigned to {GITHUB_USERNAME} — comment posted",
-                )
+                    post_comment(org, repo, issue["number"], comment_body)
+                    return _transition(
+                        state, "blocked",
+                        failure_reason=f"Proposal/Discussion required. Discussion comment posted on issue #{issue['number']}.",
+                    )
+                else:  # WAIT_FOR_ASSIGNMENT
+                    comment_body = f"Hi! I'd like to work on this issue. Could I please be assigned? 🙏"
+                    post_comment(org, repo, issue["number"], comment_body)
+                    return _transition(
+                        state, "blocked",
+                        failure_reason=f"Issue #{issue['number']} not yet assigned to {GITHUB_USERNAME} — comment posted",
+                    )
         except Exception as exc:
             log.error("pipeline.step3_failed", error=str(exc))
             return _transition(state, "failed", failure_reason=f"Step 3 error: {exc}")
+
+    # -----------------------------------------------------------------------
+    # STEP 3.5: FORK DETECTION
+    # -----------------------------------------------------------------------
+    use_fork = False
+    fork_owner = GITHUB_USERNAME
+    fork_repo_name = repo
+
+    if GITHUB_USERNAME:
+        try:
+            # Check collaborator status
+            is_collab = is_collaborator(org, repo, GITHUB_USERNAME)
+            if not is_collab:
+                use_fork = True
+                log.info("pipeline.fork_mode_enabled", reason="not a collaborator — using fork workflow")
+                fork_owner, fork_repo_name = get_or_create_fork(org, repo)
+                if not dry_run:
+                    sync_fork_with_upstream(fork_owner, fork_repo_name, org, repo)
+            else:
+                log.info("pipeline.collaborator_mode", reason="user is collaborator — pushing directly to upstream")
+        except Exception as exc:
+            log.warning("pipeline.fork_detection_failed", error=str(exc))
+            # Fallback to direct push/cloning
+            use_fork = False
 
     # -----------------------------------------------------------------------
     # STEP 4: CONTEXT RETRIEVAL
@@ -240,9 +386,15 @@ def run_pipeline(
     try:
         branch_name = git_ops.get_branch_name(issue["number"], issue.get("title", "fix"))
         local_path = git_ops.get_local_path(org, repo)
-        repo_url = f"https://github.com/{org}/{repo}.git"
 
-        git_repo = git_ops.clone_repo(repo_url, str(local_path))
+        git_repo = git_ops.clone_fork_or_upstream(
+            org=org,
+            repo=repo,
+            fork_owner=fork_owner,
+            fork_repo=fork_repo_name,
+            local_path=str(local_path),
+            use_fork=use_fork,
+        )
         if git_repo is None:
             return _transition(state, "blocked", failure_reason="Failed to clone repository")
 
@@ -462,7 +614,10 @@ def run_pipeline(
     _transition(state, "pushing")
     if not dry_run:
         try:
-            rebased = git_ops.rebase_from_main(git_repo)
+            if use_fork:
+                rebased = git_ops.rebase_fork_from_upstream(git_repo)
+            else:
+                rebased = git_ops.rebase_from_main(git_repo)
             if not rebased:
                 return _transition(
                     state, "blocked",
@@ -501,16 +656,31 @@ def run_pipeline(
     _transition(state, "drafting_pr")
     if not dry_run:
         try:
-            pushed = git_ops.push_branch(git_repo, branch_name)
+            if use_fork:
+                pushed = git_ops.push_to_fork(git_repo, branch_name)
+            else:
+                pushed = git_ops.push_branch(git_repo, branch_name)
             if not pushed:
-                return _transition(state, "failed", failure_reason="Failed to push branch to origin")
+                return _transition(state, "failed", failure_reason="Failed to push branch")
 
             pr_body = _build_pr_body(issue, final_diff, failure_class, reviewer_notes, model_used, risk)
             issue_num = issue["number"]
             issue_title_fallback = "Fix #" + str(issue_num)
             pr_title = issue.get("title", issue_title_fallback) + " (closes #" + str(issue_num) + ")"
 
-            pr_url = git_ops.create_draft_pr(org, repo, branch_name, pr_title, pr_body)
+            if use_fork:
+                pr_url = git_ops.create_cross_repo_draft_pr(
+                    upstream_org=org,
+                    upstream_repo=repo,
+                    fork_owner=fork_owner,
+                    branch=branch_name,
+                    title=pr_title,
+                    body=pr_body,
+                    issue_number=issue_num
+                )
+            else:
+                pr_url = git_ops.create_draft_pr(org, repo, branch_name, pr_title, pr_body)
+
             if pr_url:
                 log.info("pipeline.draft_pr_created", url=pr_url)
             else:
