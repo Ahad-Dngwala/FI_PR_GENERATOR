@@ -3,7 +3,19 @@
     {
       "name": "viru0909-dev",
       "repos": [
-        {"name": "nyay-setu-working", "enabled": true}
+        {
+          "name": "nyay-setu-working",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "name": "aryandas2911",
+      "repos": [
+        {
+          "name": "DailyForge",
+          "enabled": false
+        }
       ]
     }
   ],

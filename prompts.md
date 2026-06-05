@@ -85,7 +85,7 @@ Respond with ONLY the class name. No explanation.
 ## 3. Memory Builder — Conventions Extraction
 
 **MODULE:** `agents/memory_builder.py` → `_extract_conventions()`
-**LLM:** Gemini 2.0 Flash (Google AI Studio) → fallback: Llama 70B (Groq)
+**LLM:** Gemini 2.5 Flash (Google AI Studio) → fallback: Llama 70B (Groq)
 **ROLE:** Analyze merged PR history to extract repo conventions: commit style, branch
 naming, test commands, hotspot files, accepted/rejected issue types.
 **TRIGGER:** Called once during `build-memory` command or first pipeline run on a new repo.
@@ -134,7 +134,7 @@ Respond with valid JSON only.
 ## 4. Contribution Workflow Detector
 
 **MODULE:** `agents/memory_builder.py` → `_detect_workflow()`
-**LLM:** Llama 3.1 70B Versatile (Groq) → fallback: Gemini 2.0 Flash
+**LLM:** Llama 3.3 70B Versatile (Groq) → fallback: Gemini 2.5 Flash
 **ROLE:** Dynamically discover HOW this repo expects contributions to happen.
 Does it use a claim bot? Must you propose first? Can you send a direct PR?
 **TRIGGER:** Called during `build-memory` and during incremental refresh.
@@ -203,10 +203,11 @@ Respond with JSON only.
 
 **MODULE:** `agents/coder.py` → `generate_patch()` + `prompts/coder.txt`
 **LLM:**
-  1. Gemini 2.5 Pro (Google AI Studio) — PRIMARY
-  2. Qwen 2.5 Coder 72B (OpenRouter) — FALLBACK 1
-  3. DeepSeek Coder V2 (OpenRouter) — FALLBACK 2
-  4. Claude Sonnet (Anthropic) — FALLBACK 3 (paid)
+  1. Gemini 2.5 Flash (Google AI Studio) — PRIMARY
+  2. Gemini 2.5 Pro (Google AI Studio) — FALLBACK 1
+  3. Qwen 2.5 Coder 32B (OpenRouter) — FALLBACK 2
+  4. DeepSeek V4 Flash (OpenRouter) — FALLBACK 3
+  5. Claude Sonnet (Anthropic) — FALLBACK 4 (paid)
 **ROLE:** Generate a minimal unified diff (patch) that fixes the GitHub issue.
 **TRIGGER:** Called in Step 5 of the pipeline, up to MAX_RETRIES+1 times.
 
@@ -257,7 +258,7 @@ Previous attempt failed with the following error. Fix it:
 ## 6. Independent Code Review
 
 **MODULE:** `agents/reviewer.py` → `review_patch()`
-**LLM:** Qwen 2.5 Coder 32B Preview (Groq) — intentionally different from coder
+**LLM:** Llama 3.3 70B Versatile (Groq) — intentionally different from coder
 **ROLE:** Review the generated patch for bugs, style issues, missing tests, and
 unrelated changes. Classify issues as critical (pipeline retries) or minor (human sees notes).
 **TRIGGER:** Called in Step 6, after patch is applied and tests run.
@@ -314,7 +315,7 @@ approved = true even if there are minor issues (human will see them)
 |---|--------|-----|----------|-----------|--------|
 | 1 | Issue Clarity | Configurable (Default: `llama-3.1-8b-instant`) | Groq | scorer.py | Number 0-100 |
 | 2 | Test Classification | Configurable (Default: `llama-3.1-8b-instant`) | Groq | test_runner.py | One class name |
-| 3 | Conventions Extraction | Configurable (Default: `gemini-2.0-flash`) | Google AI | memory_builder.py | JSON dict |
+| 3 | Conventions Extraction | Configurable (Default: `gemini-2.5-flash`) | Google AI | memory_builder.py | JSON dict |
 | 4 | Workflow Detection | Configurable (Default: `llama-3.3-70b-versatile`) | Groq | memory_builder.py | JSON WorkflowRules |
 | 5 | Code Generation | Configurable (`coding_chain` fallback list) | Multiple | coder.py | Unified diff |
 | 6 | Code Review | Configurable (Default: `llama-3.3-70b-versatile`) | Groq | reviewer.py | JSON verdict |

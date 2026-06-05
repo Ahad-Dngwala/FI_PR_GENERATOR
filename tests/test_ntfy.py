@@ -42,8 +42,8 @@ import pytest
 import requests
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file relative to this test file
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
 # State dir used by the approval server
 STATE_DIR = Path("state")

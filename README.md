@@ -776,6 +776,7 @@ GEMINI_API_KEY=AIza...            # Org memory builds (FREE)
 # ── OPTIONAL FALLBACKS ──────────────────────────────────
 OPENROUTER_API_KEY=sk-or-...      # Qwen / DeepSeek fallback
 NTFY_REPLY_TOPIC=fi-..-reply       # defaults to {NTFY_TOPIC}-reply
+DISABLE_ORG_WHITELIST=true         # Set to true to bypass config/orgs.json whitelist checks
 ```
 
 ### 4. Configure Target Orgs
@@ -797,6 +798,9 @@ Edit `config/orgs.json`:
   "max_retries": 2
 }
 ```
+
+> [!TIP]
+> You can bypass the `config/orgs.json` whitelist check entirely for local runs and command listeners by setting `DISABLE_ORG_WHITELIST=true` in your `.env` file.
 
 ### 5. Build Org Memory (first time)
 

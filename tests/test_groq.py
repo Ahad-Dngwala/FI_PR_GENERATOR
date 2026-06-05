@@ -1,7 +1,8 @@
 """Quick Groq API test — delete after verifying."""
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv(override=True)
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
 key = os.environ.get("GROQ_API_KEY", "")
 print(f"Key: {key[:8]}...{key[-4:]}" if len(key) > 12 else f"Key: {key!r}")

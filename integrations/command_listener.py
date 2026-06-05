@@ -39,7 +39,7 @@ import structlog
 log = structlog.get_logger(__name__)
 
 # Rate limit: minimum seconds between pipeline runs
-MIN_RUN_INTERVAL_SECONDS = 20 * 60  # 20 minutes
+MIN_RUN_INTERVAL_SECONDS = 1 * 60  # 20 minutes
 MAX_RUNS_PER_HOUR = 3
 
 
@@ -352,6 +352,10 @@ def listen_for_commands(
                         continue
 
                     log.info("command_listener.received", message=text)
+
+                    # Reload environment variables dynamically to pick up any changes in .env
+                    from dotenv import load_dotenv
+                    load_dotenv(override=True)
 
                     # Parse the command
                     targets, issue_number, live_requested, mode_name, error_msg = _parse_command(text)

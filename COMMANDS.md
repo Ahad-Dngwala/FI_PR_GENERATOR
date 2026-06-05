@@ -126,6 +126,31 @@ python main.py list-states --status waiting_approval
 
 ---
 
+### `test-notification` — Verify mobile approval loop
+
+Sends a test notification to your phone subscription and starts a local web server to check your tunnel.
+
+```powershell
+python main.py test-notification
+```
+
+---
+
+### `listen` — Start mobile-first command bot
+
+Subscribes to your command topic on ntfy and automatically triggers runs when you send "org/repo" from your phone.
+
+```powershell
+# Start bot in dry-run mode (safe default)
+python main.py listen
+
+# Start bot and allow actual push/live pipeline runs (--live suffix allowed)
+python main.py listen --live
+```
+
+---
+
+
 ## Scheduler — `python scheduler.py`
 
 Keeps org memory fresh automatically. Run this as a background service.

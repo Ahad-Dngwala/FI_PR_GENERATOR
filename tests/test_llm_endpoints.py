@@ -20,8 +20,9 @@ import os
 import pytest
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file relative to this test file
+from pathlib import Path
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
 
 # ---------------------------------------------------------------------------
