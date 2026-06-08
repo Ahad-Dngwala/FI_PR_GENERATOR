@@ -10,7 +10,9 @@ Caching: requests_cache installed globally (SQLite backend, gitignored).
 
 from __future__ import annotations
 
+import json
 import os
+import pathlib
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -226,11 +228,58 @@ def get_issue(org: str, repo: str, number: int) -> Optional[dict]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Persistent deduplication guard for post_comment
+# ---------------------------------------------------------------------------
+
+_COMMENTED_ISSUES_PATH = pathlib.Path("state") / "commented_issues.json"
+
+
+def _load_commented_issues() -> set[str]:
+    """Load the persisted set of commented issue keys from disk.
+
+    Returns an empty set if the file does not exist or is unreadable,
+    so a corrupted/missing file degrades gracefully rather than crashing.
+    """
+    try:
+        if _COMMENTED_ISSUES_PATH.exists():
+            data = json.loads(_COMMENTED_ISSUES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return set(data)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("github.commented_issues_load_failed", path=str(_COMMENTED_ISSUES_PATH), error=str(exc))
+    return set()
+
+
+def _persist_commented_issues() -> None:
+    """Write the in-memory set to disk atomically (write-then-rename).
+
+    Atomic rename means a crash mid-write cannot corrupt the existing file.
+    The state/ directory is created if it does not yet exist.
+    """
+    try:
+        _COMMENTED_ISSUES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _COMMENTED_ISSUES_PATH.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(sorted(_commented_issues), indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(_COMMENTED_ISSUES_PATH)
+    except Exception as exc:  # noqa: BLE001
+        log.error("github.commented_issues_persist_failed", path=str(_COMMENTED_ISSUES_PATH), error=str(exc))
+
+
+# Module-level set — loaded from disk on import so the guard survives restarts
+_commented_issues: set[str] = _load_commented_issues()
+
+
 def post_comment(org: str, repo: str, issue_number: int, body: str) -> bool:
     """
     Post a comment on an issue requesting assignment.
 
     Rate-limited: tracks commented issues in a local set to prevent duplicate comments.
+    The set is persisted to state/commented_issues.json so the guard survives
+    process restarts and crashes.
     Always bypasses cache (mutations are never cached).
     """
     commented_key = f"{org}/{repo}#{issue_number}"
@@ -245,15 +294,12 @@ def post_comment(org: str, repo: str, issue_number: int, body: str) -> bool:
             issue = _safe_call(r.get_issue, issue_number)
             _safe_call(issue.create_comment, body)
             _commented_issues.add(commented_key)
+            _persist_commented_issues()
             log.info("github.comment_posted", org=org, repo=repo, issue=issue_number)
             return True
     except GithubException as exc:
         log.error("github.post_comment_failed", org=org, repo=repo, issue=issue_number, error=str(exc))
         return False
-
-
-# Module-level set to track already-commented issues across this process run
-_commented_issues: set[str] = set()
 
 
 def check_assignment(
