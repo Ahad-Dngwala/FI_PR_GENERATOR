@@ -185,6 +185,7 @@ class RunState(BaseModel):
         "pushing",
         "drafting_pr",
         "completed",
+        "completed_no_pr",
         "blocked",
         "failed",
     ]
@@ -198,6 +199,7 @@ class RunState(BaseModel):
     retry_count: int = 0
     model_used: Optional[str] = None
     failure_reason: Optional[str] = None
+    pr_url: Optional[str] = None
     last_claim_attempt: Optional[datetime] = None
     claim_attempt_count: int = 0
     claim_cooldown_seconds: int = 300

@@ -719,12 +719,18 @@ def run_pipeline(
             if pr_url:
                 log.info("pipeline.draft_pr_created", url=pr_url)
             else:
-                log.warning("pipeline.draft_pr_failed_but_branch_pushed")
+                log.warning(
+                    "pipeline.draft_pr_failed_but_branch_pushed",
+                    branch=branch_name,
+                    org=org,
+                    repo=repo,
+                )
 
         except Exception as exc:
             log.error("pipeline.step10_failed", error=str(exc))
             return _transition(state, "failed", failure_reason=f"Step 10 error: {exc}")
     else:
+        pr_url = None
         log.info(
             "pipeline.dry_run_complete",
             would_push=branch_name,
@@ -733,7 +739,22 @@ def run_pipeline(
             risk=risk.level,
         )
 
-    return _transition(state, "completed")
+    if pr_url:
+        return _transition(state, "completed", pr_url=pr_url)
+
+    if dry_run:
+        return _transition(state, "completed")
+
+    return _transition(
+        state,
+        "completed_no_pr",
+        pr_url=None,
+        failure_reason=(
+            "Branch pushed to origin but draft PR creation failed. "
+            f"Create the PR manually from branch '{branch_name}' — "
+            "check gh CLI auth (`gh auth status`) and that the base branch exists."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

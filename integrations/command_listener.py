@@ -507,7 +507,13 @@ def _run_pipeline_safe(
         )
 
         # Send result summary
-        status_icon = "✅" if final_state.state == "completed" else "⚠️"
+        if final_state.state == "completed":
+            status_icon = "✅"
+        elif final_state.state == "completed_no_pr":
+            status_icon = "⚠️"
+        else:
+            status_icon = "❌" if final_state.state == "failed" else "⏸️"
+
         summary_lines = [
             f"{status_icon} Pipeline {final_state.state.upper()}: {org}/{repo}",
         ]
@@ -520,7 +526,14 @@ def _run_pipeline_safe(
                 f"Risk: {final_state.risk_score.level} "
                 f"({final_state.risk_score.score:.0f}/100)"
             )
-        if final_state.failure_reason:
+        if final_state.pr_url:
+            summary_lines.append(f"PR: {final_state.pr_url}")
+        if final_state.state == "completed_no_pr":
+            summary_lines.append(
+                "PR creation failed — branch was pushed. "
+                "Open the PR manually or check gh CLI auth."
+            )
+        if final_state.failure_reason and final_state.state not in ("completed", "completed_no_pr"):
             summary_lines.append(f"Reason: {final_state.failure_reason[:100]}")
 
         _send_status(command_topic, "\n".join(summary_lines), token)
