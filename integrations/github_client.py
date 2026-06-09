@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import os
 import time
+import json
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests_cache
@@ -226,6 +229,26 @@ def get_issue(org: str, repo: str, number: int) -> Optional[dict]:
         return None
 
 
+# Module-level tracking of commented issues
+_COMMENTED_ISSUES_PATH = Path("memory_store/commented_issues.json")
+_commented_issues_lock = threading.Lock()
+
+def _load_commented_issues() -> set[str]:
+    with _commented_issues_lock:
+        if _COMMENTED_ISSUES_PATH.exists():
+            try:
+                return set(json.loads(_COMMENTED_ISSUES_PATH.read_text(encoding="utf-8")))
+            except Exception:
+                return set()
+        return set()
+
+def _save_commented_issues(s: set[str]) -> None:
+    with _commented_issues_lock:
+        _COMMENTED_ISSUES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _COMMENTED_ISSUES_PATH.write_text(json.dumps(list(s)), encoding="utf-8")
+
+_commented_issues: set[str] = _load_commented_issues()
+
 def post_comment(org: str, repo: str, issue_number: int, body: str) -> bool:
     """
     Post a comment on an issue requesting assignment.
@@ -234,9 +257,10 @@ def post_comment(org: str, repo: str, issue_number: int, body: str) -> bool:
     Always bypasses cache (mutations are never cached).
     """
     commented_key = f"{org}/{repo}#{issue_number}"
-    if commented_key in _commented_issues:
-        log.info("github.comment_skipped_duplicate", org=org, repo=repo, issue=issue_number)
-        return False
+    with _commented_issues_lock:
+        if commented_key in _commented_issues:
+            log.info("github.comment_skipped_duplicate", org=org, repo=repo, issue=issue_number)
+            return False
 
     gh = _get_client()
     try:
@@ -244,16 +268,14 @@ def post_comment(org: str, repo: str, issue_number: int, body: str) -> bool:
             r = _safe_call(gh.get_repo, f"{org}/{repo}")
             issue = _safe_call(r.get_issue, issue_number)
             _safe_call(issue.create_comment, body)
-            _commented_issues.add(commented_key)
+            with _commented_issues_lock:
+                _commented_issues.add(commented_key)
+            _save_commented_issues(_commented_issues)
             log.info("github.comment_posted", org=org, repo=repo, issue=issue_number)
             return True
     except GithubException as exc:
         log.error("github.post_comment_failed", org=org, repo=repo, issue=issue_number, error=str(exc))
         return False
-
-
-# Module-level set to track already-commented issues across this process run
-_commented_issues: set[str] = set()
 
 
 def check_assignment(
@@ -269,6 +291,16 @@ def check_assignment(
     if issue is None:
         return False
     return any(a == github_username for a in issue.get("assignees", []))
+
+def get_default_branch(org: str, repo: str) -> str:
+    """Return the default branch of the repository."""
+    gh = _get_client()
+    try:
+        r = _safe_call(gh.get_repo, f"{org}/{repo}")
+        return r.default_branch
+    except Exception as exc:
+        log.warning("github.get_default_branch_failed", org=org, repo=repo, error=str(exc))
+        return "main"
 
 
 def get_repo_activity(org: str, repo: str) -> dict:

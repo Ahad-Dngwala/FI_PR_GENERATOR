@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+from functools import lru_cache
 
 CONFIG_PATH = Path("config/models.json")
 
 
+@lru_cache(maxsize=1)
 def load_models_config() -> dict:
     """Load and parse config/models.json. Returns empty dict on failure."""
     try:
@@ -13,6 +15,10 @@ def load_models_config() -> dict:
     except Exception:
         pass
     return {}
+
+def reload_models_config() -> None:
+    """Clear the config cache."""
+    load_models_config.cache_clear()
 
 
 def get_model_name(key: str, default: str) -> str:

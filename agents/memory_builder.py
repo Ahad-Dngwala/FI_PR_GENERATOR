@@ -462,12 +462,12 @@ def refresh_org_memory(org: str, repo: str, since_hours: int = 48) -> OrgMemory:
     # Merge workflow: keep higher-confidence version, append novel raw_patterns
     if new_workflow.confidence >= existing.workflow_rules.confidence:
         # Preserve any raw_patterns from old memory that aren't in the new one
-        old_pattern_names = {
-            p.get("pattern_name") for p in existing.workflow_rules.raw_patterns
+        new_pattern_names = {
+            p.get("pattern_name") for p in new_workflow.raw_patterns
         }
-        for p in new_workflow.raw_patterns:
-            if p.get("pattern_name") not in old_pattern_names:
-                existing.workflow_rules.raw_patterns.append(p)
+        for p in existing.workflow_rules.raw_patterns:
+            if p.get("pattern_name") not in new_pattern_names:
+                new_workflow.raw_patterns.append(p)
         existing.workflow_rules = new_workflow
 
     existing.last_refresh = datetime.now(tz=timezone.utc)

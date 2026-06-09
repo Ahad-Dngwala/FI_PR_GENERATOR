@@ -101,7 +101,7 @@ def send_approval_request(
     title = f"FI-PR: #{req.issue_number} — {req.issue_title[:50]}"
     body = _build_body(req)
     priority = 4 if req.risk_level == "high" else 3
-    risk_tag = _RISK_EMOJI.get(req.risk_level, 'white_circle').replace('🟢', 'green_circle').replace('🟡', 'yellow_circle').replace('🔴', 'red_circle')
+    risk_tag = _RISK_EMOJI.get(req.risk_level, 'white_circle').replace('🟢', 'large_green_circle').replace('🟡', 'large_yellow_circle').replace('🔴', 'large_red_circle')
 
     payload = {
         "topic": topic,

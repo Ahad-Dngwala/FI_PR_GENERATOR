@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -176,20 +177,24 @@ def classify_failure(output: str, repo_path: str = "") -> str:
     output_lower = output.lower()
 
     # Check for clean pass keywords first
-    pass_signals = ["passed", "ok", "0 failed", "all tests passed", "✓"]
+    pass_signals = ["passed", "ok", "0 failed", "all tests passed", "\u2713", "no tests ran"]
+    fail_signals_re = [
+        re.compile(rf"\b{re.escape(p)}\b", re.IGNORECASE)
+        for patterns in FAILURE_PATTERNS.values()
+        for p in patterns
+    ]
     if any(s in output_lower for s in pass_signals):
         # Only PASS if no failure patterns override
-        if not any(
-            p.lower() in output_lower
-            for patterns in FAILURE_PATTERNS.values()
-            for p in patterns
-        ):
+        if not any(pat.search(output) for pat in fail_signals_re):
             return "PASS"
 
     # Rule-based classification
     matched: dict[str, int] = {}
     for category, patterns in FAILURE_PATTERNS.items():
-        hits = sum(1 for p in patterns if p.lower() in output_lower)
+        hits = sum(
+            1 for p in patterns
+            if re.search(rf"\b{re.escape(p)}\b", output, re.IGNORECASE)
+        )
         if hits:
             matched[category] = hits
 
@@ -252,9 +257,10 @@ def _classify_with_llm(output: str) -> str:
 
         # Try Groq classification (fallback or primary)
         if not result:
-            if provider == "groq" or (provider != "ollama" and api_key):
+            groq_key = os.environ.get("GROQ_API_KEY")
+            if groq_key:
                 from groq import Groq
-                client = Groq(api_key=api_key)
+                client = Groq(api_key=groq_key)
                 response = client.chat.completions.create(
                     model=model if provider == "groq" else "llama-3.1-8b-instant",
                     messages=[{"role": "user", "content": prompt}],

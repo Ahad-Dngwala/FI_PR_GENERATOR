@@ -158,12 +158,13 @@ def find_relevant_files(
 
     file_hits: dict[str, int] = {}
 
-    for keyword in keywords:
-        # Build ripgrep command with glob exclusions to pre-filter
-        rg_args = ["rg", "-l", "--max-filesize", "500K"]
+    if keywords:
+        rg_args = ["rg", "-c", "--max-filesize", "500K"]
         for glob in _RG_GLOB_EXCLUDES:
             rg_args.extend(["--glob", glob])
-        rg_args.extend([keyword, "."])
+        for keyword in keywords:
+            rg_args.extend(["-e", keyword])
+        rg_args.append(".")
 
         code, stdout, _ = _run_subprocess(
             args=rg_args,
@@ -172,8 +173,13 @@ def find_relevant_files(
         )
         if code == 0:
             for line in stdout.splitlines():
-                normalized = str(Path(line).as_posix())
-                file_hits[normalized] = file_hits.get(normalized, 0) + 1
+                parts = line.rsplit(":", 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    normalized = str(Path(parts[0]).as_posix())
+                    file_hits[normalized] = file_hits.get(normalized, 0) + int(parts[1])
+                else:
+                    normalized = str(Path(line).as_posix())
+                    file_hits[normalized] = file_hits.get(normalized, 0) + 1
 
     if not file_hits:
         log.warning(

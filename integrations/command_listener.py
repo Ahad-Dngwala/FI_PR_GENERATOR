@@ -39,13 +39,34 @@ import structlog
 from github import Auth, Github
 
 # Global thread-safety lock for preventing duplicate runs on the same issue
-RUNNING_ISSUES: set[tuple[str, str, int]] = set()
+RUNNING_ISSUES_PATH = Path("state/running_issues.json")
 RUNNING_ISSUES_LOCK = threading.Lock()
+
+def _load_running_issues() -> set[tuple[str, str, int]]:
+    with RUNNING_ISSUES_LOCK:
+        if RUNNING_ISSUES_PATH.exists():
+            try:
+                data = json.loads(RUNNING_ISSUES_PATH.read_text(encoding="utf-8"))
+                return set((o, r, i) for o, r, i in data)
+            except Exception:
+                return set()
+        return set()
+
+def _save_running_issues(s: set[tuple[str, str, int]]) -> None:
+    # No lock here, assumes called from inside RUNNING_ISSUES_LOCK
+    RUNNING_ISSUES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RUNNING_ISSUES_PATH.write_text(json.dumps(list(s)), encoding="utf-8")
+
+RUNNING_ISSUES: set[tuple[str, str, int]] = _load_running_issues()
 
 log = structlog.get_logger(__name__)
 
 # Rate limit: minimum seconds between pipeline runs
-MIN_RUN_INTERVAL_SECONDS = 1 * 60  # 20 minutes
+MIN_RUN_INTERVAL_SECONDS = int(os.environ.get("MIN_RUN_INTERVAL_SECONDS", 1200))
+
+_run_timestamps: list[float] = []
+_last_pipeline_end_time: float = 0
+_rate_limit_lock = threading.Lock()
 MAX_RUNS_PER_HOUR = 3
 
 
@@ -302,10 +323,6 @@ def listen_for_commands(
         allow_live=allow_live,
     )
 
-    # Track rate limiting
-    run_timestamps: list[float] = []
-    last_run_time: float = 0
-
     subscribe_url = f"{ntfy_url.rstrip('/')}/{command_topic}/json"
     headers: dict[str, str] = {}
     if token:
@@ -391,26 +408,28 @@ def listen_for_commands(
 
                     # Rate limiting
                     now = time.monotonic()
-                    if now - last_run_time < MIN_RUN_INTERVAL_SECONDS:
-                        remaining = int((MIN_RUN_INTERVAL_SECONDS - (now - last_run_time)) / 60)
-                        log.warning("command_listener.rate_limited", wait_minutes=remaining)
-                        _send_status(
-                            command_topic,
-                            f"⏳ Rate limited — wait {remaining} min before next run.",
-                            token,
-                        )
-                        continue
+                    with _rate_limit_lock:
+                        if now - _last_pipeline_end_time < MIN_RUN_INTERVAL_SECONDS:
+                            remaining = int((MIN_RUN_INTERVAL_SECONDS - (now - _last_pipeline_end_time)) / 60)
+                            log.warning("command_listener.rate_limited", wait_minutes=remaining)
+                            _send_status(
+                                command_topic,
+                                f"⏳ Rate limited — wait {remaining} min before next run.",
+                                token,
+                            )
+                            continue
 
-                    # Clean old timestamps and check hourly limit
-                    run_timestamps[:] = [t for t in run_timestamps if now - t < 3600]
-                    if len(run_timestamps) >= MAX_RUNS_PER_HOUR:
-                        log.warning("command_listener.hourly_limit", count=len(run_timestamps))
-                        _send_status(
-                            command_topic,
-                            f"⏳ Hourly limit reached ({MAX_RUNS_PER_HOUR}/hr). Try again later.",
-                            token,
-                        )
-                        continue
+                        # Clean old timestamps and check hourly limit
+                        global _run_timestamps
+                        _run_timestamps[:] = [t for t in _run_timestamps if now - t < 3600]
+                        if len(_run_timestamps) >= MAX_RUNS_PER_HOUR:
+                            log.warning("command_listener.hourly_limit", count=len(_run_timestamps))
+                            _send_status(
+                                command_topic,
+                                f"⏳ Hourly limit reached ({MAX_RUNS_PER_HOUR}/hr). Try again later.",
+                                token,
+                            )
+                            continue
 
                     # Determine dry_run mode
                     dry_run = True
@@ -439,8 +458,6 @@ def listen_for_commands(
 
                     # Run the pipeline in a background thread for each target
                     for org, repo in targets:
-                        last_run_time = time.monotonic()
-                        run_timestamps.append(last_run_time)
                         
                         log.info(
                             "command_listener.triggering_pipeline",
@@ -479,6 +496,7 @@ def _run_pipeline_safe(
             log.info("command_listener.already_running_skipping", key=key)
             return
         RUNNING_ISSUES.add(key)
+        _save_running_issues(RUNNING_ISSUES)
 
     try:
         from orchestrator import run_pipeline
@@ -517,6 +535,13 @@ def _run_pipeline_safe(
     finally:
         with RUNNING_ISSUES_LOCK:
             RUNNING_ISSUES.discard(key)
+            _save_running_issues(RUNNING_ISSUES)
+
+        now = time.monotonic()
+        with _rate_limit_lock:
+            global _last_pipeline_end_time
+            _last_pipeline_end_time = now
+            _run_timestamps.append(now)
 
 
 def _poll_assignments(github_username: str, allow_live: bool, poll_interval_seconds: int = 300) -> None:
@@ -586,7 +611,7 @@ def _poll_assignments(github_username: str, allow_live: bool, poll_interval_seco
                 
                 t = threading.Thread(
                     target=_run_pipeline_safe,
-                    args=(org, repo, issue.number, allow_live, command_topic, token),
+                    args=(org, repo, issue.number, not allow_live, command_topic, token),
                     daemon=True
                 )
                 t.start()

@@ -151,6 +151,7 @@ def run_pipeline(
         is_collaborator,
         get_or_create_fork,
         sync_fork_with_upstream,
+        get_default_branch,
     )
     from memory.org_memory import load_or_build_org_memory
 
@@ -311,7 +312,13 @@ def run_pipeline(
                     # Post claim comment
                     comment_body = wf.claim_command or "/assign"
                     log.info("pipeline.step3.post_claim_comment", command=comment_body, count=state.claim_attempt_count + 1)
-                    post_comment(org, repo, issue["number"], comment_body)
+                    post_comment_ok = post_comment(org, repo, issue["number"], comment_body)
+                    if not post_comment_ok:
+                        log.warning("pipeline.step3.comment_forbidden", issue=issue["number"])
+                        return _transition(
+                            state, "blocked",
+                            failure_reason=f"Cannot post claim comment on issue #{issue['number']} — permission denied. Manual assignment required."
+                        )
                     
                     # Update claim attempt state
                     state.last_claim_attempt = now
@@ -339,14 +346,24 @@ def run_pipeline(
                         f"Hi! I'd like to work on this issue. I am preparing a proposal of my "
                         f"approach to solve this problem. Can you assign this to me? Thanks!"
                     )
-                    post_comment(org, repo, issue["number"], comment_body)
+                    post_comment_ok = post_comment(org, repo, issue["number"], comment_body)
+                    if not post_comment_ok:
+                        return _transition(
+                            state, "blocked",
+                            failure_reason=f"Proposal/Discussion required, but cannot post comment on issue #{issue['number']} — permission denied."
+                        )
                     return _transition(
                         state, "blocked",
                         failure_reason=f"Proposal/Discussion required. Discussion comment posted on issue #{issue['number']}.",
                     )
                 else:  # WAIT_FOR_ASSIGNMENT
                     comment_body = f"Hi! I'd like to work on this issue. Could I please be assigned? 🙏"
-                    post_comment(org, repo, issue["number"], comment_body)
+                    post_comment_ok = post_comment(org, repo, issue["number"], comment_body)
+                    if not post_comment_ok:
+                        return _transition(
+                            state, "blocked",
+                            failure_reason=f"Cannot post assignment request comment on issue #{issue['number']} — permission denied."
+                        )
                     return _transition(
                         state, "blocked",
                         failure_reason=f"Issue #{issue['number']} not yet assigned to {GITHUB_USERNAME} — comment posted",
@@ -361,9 +378,11 @@ def run_pipeline(
     use_fork = False
     fork_owner = GITHUB_USERNAME
     fork_repo_name = repo
+    upstream_default_branch = "main"
 
     if GITHUB_USERNAME:
         try:
+            upstream_default_branch = get_default_branch(org, repo)
             # Check collaborator status
             is_collab = is_collaborator(org, repo, GITHUB_USERNAME)
             if not is_collab:
@@ -556,9 +575,19 @@ def run_pipeline(
 
             # Build per-file diff summary
             diff_summary_lines = []
+            current_file = None
+            file_counts: dict[str, list[int]] = {}
+            for line in final_diff.splitlines():
+                if line.startswith("+++ b/"):
+                    current_file = line[6:]
+                    file_counts.setdefault(current_file, [0, 0])
+                elif current_file:
+                    if line.startswith("+") and not line.startswith("+++"):
+                        file_counts[current_file][0] += 1
+                    elif line.startswith("-") and not line.startswith("---"):
+                        file_counts[current_file][1] += 1
             for f in files_changed[:5]:
-                add = sum(1 for l in final_diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
-                rem = sum(1 for l in final_diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+                add, rem = file_counts.get(f, [0, 0])
                 diff_summary_lines.append(f"  {f} (+{add}/-{rem})")
             diff_summary = "\n".join(diff_summary_lines)
 
@@ -644,7 +673,12 @@ def run_pipeline(
 
             # Commit the patch
             commit_msg = _build_commit_message(issue, memory)
-            git_ops.stage_and_commit(git_repo, commit_msg)
+            committed = git_ops.stage_and_commit(git_repo, commit_msg)
+            if not committed:
+                return _transition(
+                    state, "failed",
+                    failure_reason="Nothing to commit after rebase — patch may have been absorbed by upstream changes"
+                )
 
         except Exception as exc:
             log.error("pipeline.step9_failed", error=str(exc))
@@ -676,7 +710,8 @@ def run_pipeline(
                     branch=branch_name,
                     title=pr_title,
                     body=pr_body,
-                    issue_number=issue_num
+                    issue_number=issue_num,
+                    base_branch=upstream_default_branch
                 )
             else:
                 pr_url = git_ops.create_draft_pr(org, repo, branch_name, pr_title, pr_body)

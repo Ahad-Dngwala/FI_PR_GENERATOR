@@ -36,7 +36,10 @@ def read_cache() -> dict:
 
 def write_cache(cache_data: dict) -> None:
     """Write prompt cache file. Safe to call from multiple threads under _cache_lock."""
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        pass
     try:
         with open(CACHE_PATH, "w", encoding="utf-8") as f:
             json.dump(cache_data, f, indent=2, ensure_ascii=False)
@@ -72,6 +75,13 @@ def call_ollama_serialized(
 
     with _ollama_lock:
         log.info("local_queue.lock_acquired", model=model)
+
+        # 2b. Double-check cache in case another thread populated it while waiting
+        with _cache_lock:
+            cache = read_cache()
+            if key in cache:
+                log.info("local_queue.cache_hit_after_lock", model=model, key=key)
+                return cache[key]
         
         # Enforce timeout inside call via client or wrap execution
         response_text = client_fn(

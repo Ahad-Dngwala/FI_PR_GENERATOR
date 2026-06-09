@@ -68,6 +68,15 @@
       "repos": [
         {
           "name": "HelpOps-Hub",
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "name": "Ahad-Dngwala",
+      "repos": [
+        {
+          "name": "FI_PR_GENERATOR",
           "enabled": true
         }
       ]

@@ -76,9 +76,9 @@ def clone_repo(repo_url: str, local_path: str) -> Optional[Repo]:
 def get_default_branch(repo: Repo) -> str:
     """Detect the default branch name (main or master)."""
     try:
-        ref = repo.remotes.origin.refs
+        remote_ref_names = [r.remote_head for r in repo.remotes.origin.refs]
         for candidate in ["main", "master", "develop"]:
-            if hasattr(ref, candidate):
+            if f"origin/{candidate}" in remote_ref_names or candidate in remote_ref_names:
                 return candidate
         # Fall back to HEAD
         return repo.active_branch.name
@@ -142,6 +142,13 @@ def get_diff(repo: Repo) -> str:
     try:
         # Include both staged and unstaged changes vs HEAD
         diff = repo.git.diff("HEAD", unified=3)
+        if not diff.strip():
+            diff = repo.git.diff("--cached", unified=3)
+        if not diff.strip():
+            try:
+                diff = repo.git.diff("HEAD~1", "HEAD", unified=3)
+            except GitCommandError:
+                pass
         return diff
     except GitCommandError as exc:
         log.error("git.get_diff_failed", error=str(exc))
@@ -379,6 +386,7 @@ def create_cross_repo_draft_pr(
     title: str,
     body: str,
     issue_number: int,
+    base_branch: str = "main",
 ) -> Optional[str]:
     """
     Create a draft PR from fork_owner:branch to upstream_org/upstream_repo.
@@ -386,13 +394,12 @@ def create_cross_repo_draft_pr(
     upstream = f"{upstream_org}/{upstream_repo}"
     head = f"{fork_owner}:{branch}"
     try:
-        # Try base='main' first
         result = subprocess.run(
             [
                 "gh", "pr", "create",
                 "--repo", upstream,
                 "--head", head,
-                "--base", "main",
+                "--base", base_branch,
                 "--draft",
                 "--title", title,
                 "--body", body,
@@ -403,33 +410,10 @@ def create_cross_repo_draft_pr(
         )
         if result.returncode == 0:
             pr_url = result.stdout.strip()
-            log.info("git.cross_repo_pr_created", url=pr_url, head=head, base="main")
+            log.info("git.cross_repo_pr_created", url=pr_url, head=head, base=base_branch)
             return pr_url
         
-        # If 'main' fails, check if 'master' is the default branch and try that
-        if "main" in result.stderr.lower() or "base" in result.stderr.lower() or result.returncode != 0:
-            log.warning("git.cross_repo_pr_main_failed_trying_master", stderr=result.stderr)
-            result2 = subprocess.run(
-                [
-                    "gh", "pr", "create",
-                    "--repo", upstream,
-                    "--head", head,
-                    "--base", "master",
-                    "--draft",
-                    "--title", title,
-                    "--body", body,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if result2.returncode == 0:
-                pr_url = result2.stdout.strip()
-                log.info("git.cross_repo_pr_created", url=pr_url, head=head, base="master")
-                return pr_url
-            
-            log.error("git.cross_repo_pr_failed", stderr=result2.stderr, head=head)
-            return None
+        log.error("git.cross_repo_pr_failed", stderr=result.stderr, head=head)
         return None
     except FileNotFoundError:
         log.error("git.gh_cli_not_found", hint="Install gh CLI: https://cli.github.com")

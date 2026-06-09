@@ -237,7 +237,7 @@ def _quick_filter(issue: dict) -> tuple[bool, str]:
     # 6. Bad label checks
     bad_labels = {
         "wontfix", "invalid", "duplicate", "blocked", "needs-discussion",
-        "on hold", "deferred", "question", "help wanted"
+        "on hold", "deferred", "question"
     }
     labels_clean = set()
     for l in issue.get("labels", []):
@@ -336,24 +336,23 @@ def _score_clarity_batch(issues: list[dict]) -> dict[int, float]:
         except Exception as exc:
             log.warning("scorer.clarity_ollama_batch_failed", error=str(exc)[:100], fallback="groq/gemini")
 
-    # Try Groq (as fallback or primary if configured)
-    if provider == "groq" or (provider != "ollama" and os.environ.get("GROQ_API_KEY")):
-        api_key = os.environ.get("GROQ_API_KEY")
-        if api_key:
-            try:
-                from groq import Groq
-                client = Groq(api_key=api_key)
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=600,
-                    temperature=0.0,
-                    response_format={"type": "json_object"},
-                )
-                raw = response.choices[0].message.content
-                return _parse_batch_json(raw)
-            except Exception as exc:
-                log.warning("scorer.clarity_groq_batch_failed", error=str(exc)[:100], fallback="gemini")
+    # Try Groq (as fallback or primary)
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        try:
+            from groq import Groq
+            client = Groq(api_key=groq_key)
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=600,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            raw = response.choices[0].message.content
+            return _parse_batch_json(raw)
+        except Exception as exc:
+            log.warning("scorer.clarity_groq_batch_failed", error=str(exc)[:100], fallback="gemini")
 
     # Fallback: try Gemini Flash
     gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -470,25 +469,24 @@ def _score_clarity(text: str, issue_number: int = 0) -> float:
         except Exception as exc:
             log.warning("scorer.clarity_ollama_failed", error=str(exc)[:100], fallback="groq/gemini")
 
-    # Try Groq (fallback or primary if configured)
-    if provider == "groq" or (provider != "ollama" and os.environ.get("GROQ_API_KEY")):
-        api_key = os.environ.get("GROQ_API_KEY")
-        if api_key:
-            try:
-                from groq import Groq
+    # Try Groq (fallback or primary)
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        try:
+            from groq import Groq
 
-                client = Groq(api_key=api_key)
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=5,
-                    temperature=0.0,
-                )
-                raw = response.choices[0].message.content.strip()
-                score = float("".join(c for c in raw if c.isdigit() or c == "."))
-                return min(100.0, max(0.0, score))
-            except Exception as exc:
-                log.warning("scorer.clarity_groq_failed", error=str(exc)[:100], fallback="gemini")
+            client = Groq(api_key=groq_key)
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5,
+                temperature=0.0,
+            )
+            raw = response.choices[0].message.content.strip()
+            score = float("".join(c for c in raw if c.isdigit() or c == "."))
+            return min(100.0, max(0.0, score))
+        except Exception as exc:
+            log.warning("scorer.clarity_groq_failed", error=str(exc)[:100], fallback="gemini")
 
     # Fallback: try Gemini Flash
     gemini_key = os.environ.get("GEMINI_API_KEY")
