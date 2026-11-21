@@ -389,16 +389,17 @@ def score_issues_batch(
     Returns: list of IssueScore sorted by score descending
     """
     candidates = []
-    skipped = []
+    skipped_reasons = {}
     
     for issue in issues:
         passed, reason = _quick_filter(issue)
         if passed:
             candidates.append(issue)
         else:
-            skipped.append((issue.get("number"), reason))
+            skipped_reasons.setdefault(issue.get("number"), reason)
 
-    log.info("scorer.heuristic_filter", total=len(issues), passed=len(candidates), skipped_count=len(skipped))
+    log.info("scorer.heuristic_filter", total=len(issues), passed=len(candidates), skipped_count=len(issues) - len(candidates))
+    candidate_numbers = {issue["number"] for issue in candidates}
 
     # Batch clarity scoring for candidates
     clarity_scores = {}
@@ -413,7 +414,7 @@ def score_issues_batch(
     for issue in issues:
         num = issue.get("number", 0)
         # If it was a candidate and has an LLM score, use it
-        if any(c["number"] == num for c in candidates):
+        if num in candidate_numbers:
             clarity = clarity_scores.get(num, 47.5)  # default heuristic if LLM missed it
             score_obj = _compute_full_score(issue, clarity, org_memory, activity)
         else:
@@ -421,8 +422,7 @@ def score_issues_batch(
             clarity = 0.0
             score_obj = _compute_full_score(issue, clarity, org_memory, activity)
             score_obj.decision = "reject"
-            # Find reason
-            reason = next(r for n, r in skipped if n == num)
+            reason = skipped_reasons[num]
             score_obj.rejection_reason = f"Heuristic filter: {reason}"
             score_obj.score = 0.0  # Set score to 0 to ensure it gets filtered out
             
